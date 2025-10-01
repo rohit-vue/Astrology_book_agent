@@ -8,12 +8,12 @@ phases:
   build:
     commands:
       - echo "Build started on `date`"
+      - echo "Building the Docker image from src/generate_pdf/Dockerfile..."
       - docker build -f src/generate_pdf/Dockerfile -t $REPOSITORY_URI:latest .
   post_build:
     commands:
-      - echo "Build completed on `date`"  
+      - echo "Build completed on `date`"
       - echo "Pushing the Docker image..."
       - docker push $REPOSITORY_URI:latest
       - echo "Updating Lambda function..."
-      # --- THIS IS THE MAGIC COMMAND THAT FIXES EVERYTHING ---
       - aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --image-uri $REPOSITORY_URI:latest
