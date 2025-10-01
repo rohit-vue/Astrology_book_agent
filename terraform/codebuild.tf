@@ -56,7 +56,7 @@ resource "aws_codebuild_project" "pdf_generator_build" {
 
   source {
     type      = "GITHUB"
-    location  = "https://github.com/museaskew/musesaskew-Astrology_book_agent.git"
+    location  = "https://github.com/rohit-vue/Astrology_book_agent.git"
     buildspec = "buildspec.yml"
   }
 }
