@@ -1,0 +1,36 @@
+# Python / Virtual Environments
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Build Artifacts & Packages
+# This is the most important addition
+dist/
+
+# Other possible build folders
+build/
+package/
+lambda_package/
+
+# Ignore any .zip files in the root directory
+*.zip
+
+# Generated Content (from local runs)
+
+generated_books/
+generated_images/
+
+
+# Terraform State & Cache
+# CRITICAL for security - never commit state files
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+
+# IDE / Operating System Files
+.vscode/
+.DS_Store

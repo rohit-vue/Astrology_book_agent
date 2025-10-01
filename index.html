@@ -1,0 +1,299 @@
+3<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmic Portrait Generator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Poppins:wght@300;400&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --font-heading: 'Cinzel', serif;
+            --font-body: 'Poppins', sans-serif;
+            --color-gold: #FFD700;
+            --color-dark-purple: #1a1a2e;
+            --color-deep-space: #0d0a18;
+            --color-light-text: #e0e0e0;
+        }
+
+        html, body {
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            background-color: var(--color-deep-space);
+        }
+
+        body {
+            font-family: var(--font-body);
+            color: var(--color-light-text);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+            box-sizing: border-box;
+        }
+
+        /* --- NEW: Advanced Animated Background --- */
+        #background-wrapper {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: -1;
+            background: radial-gradient(ellipse at center, hsla(268, 60%, 25%, 0.4) 0%, transparent 70%),
+                        linear-gradient(to bottom, hsl(240, 60%, 15%) 0%, var(--color-deep-space) 100%);
+        }
+
+        /* Function to generate stars with box-shadow */
+        /* We will do this manually in CSS for simplicity */
+        .stars {
+            position: absolute;
+            top: 0; left: 0;
+            width: 1px; height: 1px;
+            background: transparent;
+            animation: twinkle 2s ease-in-out infinite;
+        }
+
+        #stars1 {
+            box-shadow: /* Far stars */
+                1836px 1475px #FFF, 1559px 117px #FFF, 1228px 1012px #FFF, 324px 1438px #FFF, 1546px 658px #FFF, 
+                1413px 1868px #FFF, 1563px 127px #FFF, 1139px 1457px #FFF, 1261px 1199px #FFF, 755px 122px #FFF, 
+                1884px 395px #FFF, 1033px 1162px #FFF, 1693px 830px #FFF, 831px 1083px #FFF, 1374px 1357px #FFF, 
+                1018px 1445px #FFF, 546px 1568px #FFF, 1827px 1157px #FFF, 44px 1691px #FFF, 1368px 134px #FFF, 
+                1194px 1729px #FFF, 1289px 747px #FFF, 1153px 383px #FFF, 483px 154px #FFF, 1109px 1818px #FFF;
+            animation-duration: 3s;
+        }
+
+        #stars2 {
+            width: 2px; height: 2px;
+            box-shadow: /* Mid stars */
+                1353px 1461px #FFF, 1828px 1904px #FFF, 1146px 1542px #FFF, 70px 1709px #FFF, 611px 1068px #FFF, 
+                1495px 1198px #FFF, 1094px 162px #FFF, 1251px 718px #FFF, 488px 135px #FFF, 112px 1018px #FFF, 
+                1408px 614px #FFF, 319px 1205px #FFF, 1859px 1399px #FFF, 1792px 143px #FFF, 1729px 875px #FFF;
+            animation-duration: 2s;
+        }
+
+        #stars3 {
+            width: 3px; height: 3px;
+            box-shadow: /* Near stars */
+                582px 644px #FFF, 484px 1812px #FFF, 1220px 1237px #FFF, 1530px 1822px #FFF, 866px 1587px #FFF, 
+                1289px 1122px #FFF, 1085px 23px #FFF, 280px 1059px #FFF, 1700px 303px #FFF, 1547px 700px #FFF;
+            animation-duration: 1s;
+        }
+        
+        #stars1, #stars2, #stars3 {
+            animation: animStar 150s linear infinite, twinkle 4s ease-in-out infinite;
+        }
+        #stars2 { animation-duration: 100s, 3s; }
+        #stars3 { animation-duration: 50s, 2s; }
+
+        @keyframes animStar {
+            from { transform: translateY(0px); }
+            to { transform: translateY(-2000px); }
+        }
+        @keyframes twinkle {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 0.2; }
+        }
+
+        /* Shooting Stars */
+        .shooting-star {
+            position: absolute;
+            height: 2px;
+            background: linear-gradient(-45deg, rgba(255,255,255,1), rgba(255,255,255,0));
+            border-radius: 999px;
+            filter: drop-shadow(0 0 6px rgba(255,255,255,0.7));
+            animation: tail 3s ease-in-out infinite, shooting 3s ease-in-out infinite;
+        }
+        .shooting-star:nth-child(2) {
+            top: 80vh; left: 20%; animation-delay: 1.3s;
+        }
+        .shooting-star:nth-child(3) {
+            top: 20vh; left: 80%; animation-delay: 0.8s;
+        }
+        @keyframes tail {
+            0% { width: 0; } 30% { width: 100px; } 100% { width: 0; }
+        }
+        @keyframes shooting {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(300px); }
+        }
+
+        /* --- Form Styling (with minor adjustments) --- */
+        .container { z-index: 1; width: 100%; max-width: 550px; text-align: center; }
+        
+        .form-container {
+            background: rgba(26, 26, 46, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 2px solid transparent;
+            border-image: linear-gradient(to bottom right, #b8860b, ffd700) 1;
+            border-radius: 16px;
+            padding: 2rem 2.5rem; 
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+        
+        h1 {
+            font-family: var(--font-heading); font-weight: 700; font-size: 2.2rem; 
+            letter-spacing: 2px; color: #fff; margin: 0 0 0.5rem 0; text-shadow: 0 0 15px var(--color-gold);
+        }
+        
+        p.subtitle { font-weight: 300; margin-bottom: 1.5rem; opacity: 0.9; }
+        
+        .divider {
+            display: flex; align-items: center; text-align: center; color: var(--color-gold);
+            margin: 0rem 0 1.5rem 0; opacity: 0.5;
+        }
+        .divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid var(--color-gold); }
+        .divider:not(:empty)::before { margin-right: .25em; }
+        .divider:not(:empty)::after { margin-left: .25em; }
+        
+        .form-row { display: flex; gap: 1.5rem; margin-bottom: 1.2rem; }
+        .form-group { flex: 1; text-align: left; }
+        .form-group.full-width { flex-basis: 100%; margin-bottom: 1.2rem; }
+        label { display: block; margin-bottom: 0.4rem; font-weight: 400; opacity: 0.9; }
+        
+        input, select {
+            width: 100%; padding: 0.7rem 1rem; border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px; font-size: 1rem; box-sizing: border-box; background-color: rgba(0, 0, 0, 0.3);
+            color: var(--color-light-text); font-family: var(--font-body); transition: all 0.2s ease-in-out;
+            color-scheme: dark;
+        }
+
+        input:focus, select:focus { outline: none; border-color: var(--color-gold); box-shadow: 0 0 10px rgba(255, 215, 0, 0.5); }
+        input::placeholder { color: rgba(224, 224, 224, 0.5); }
+        
+        select {
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23ffd700' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
+            background-repeat: no-repeat; background-position: right 1rem center; background-size: 1em;
+        }
+        
+        button {
+            width: 100%; padding: 0.8rem; border: none; border-radius: 8px;
+            background: linear-gradient(45deg, #FFC800, #FFD700, #FFE66D);
+            color: var(--color-dark-purple); font-size: 1.1rem; font-weight: 700; font-family: var(--font-heading);
+            text-transform: uppercase; cursor: pointer; transition: all 0.3s ease;
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.4); margin-top: 0.75rem;
+        }
+        
+        button:hover:not(:disabled) { transform: translateY(-3px); box-shadow: 0 0 30px rgba(255, 215, 0, 0.7); }
+        button:disabled { background: #555; color: #999; cursor: not-allowed; box-shadow: none; animation: pulse 1.5s infinite; }
+
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+        
+        .result {
+            margin-top: 1.5rem; padding: 1.5rem; border-radius: 8px; display: none;
+            background: rgba(26, 26, 46, 0.8); border: 1px solid rgba(255, 255, 255, 0.1);
+            line-height: 1.6;
+        }
+        
+        .result.loading, .result.success, .result.error { display: block; }
+        .result.success { border-color: var(--color-gold); }
+        .result.error { border-color: #ff4d4d; color: #ffaeae; }
+        .result a { color: var(--color-gold); font-weight: bold; text-decoration: none; }
+        .result a:hover { text-decoration: underline; }
+
+        @media (max-height: 800px) {
+            .form-container { padding: 1.5rem 2rem; }
+            h1 { font-size: 2rem; }
+            p.subtitle, .divider { margin-bottom: 1rem; }
+            .form-row, .form-group.full-width { margin-bottom: 1rem; }
+            input, select { padding: 0.6rem 1rem; }
+            button { padding: 0.7rem; }
+            .result { margin-top: 1rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="background-wrapper">
+        <div id="stars1" class="stars"></div>
+        <div id="stars2" class="stars"></div>
+        <div id="stars3" class="stars"></div>
+        <div class="shooting-star"></div>
+        <div class="shooting-star"></div>
+    </div>
+    <div class="container">
+        <div class="form-container">
+            <h1>Your Cosmic Blueprint</h1>
+            <p class="subtitle">Enter your birth details to generate a personalized interpretation of your soul's journey.</p>
+            <div class="divider">✧</div>
+            <form id="book-form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="birth-date">Birth Date</label>
+                        <input type="date" id="birth-date" name="birth_date" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="birth-time">Birth Time</label>
+                        <input type="time" id="birth-time" name="birth_time" required>
+                    </div>
+                </div>
+                <div class="form-group full-width">
+                    <label for="birth-location">Birth Location</label>
+                    <input type="text" id="birth-location" name="birth_location" placeholder="e.g., Chicago, Illinois" required>
+                </div>
+                
+                <div class="form-group full-width">
+                    <label for="target-word-count">Desired Book Length</label>
+                    <select id="target-word-count" name="target_word_count">
+                        <option value="15000">Short Story (~15000 Words)</option>
+                        <option value="30000" selected>Novella (~30000 Words)</option>
+                        <option value="50000">Epic Tome (~50000 Words)</option>
+                    </select>
+                </div>
+
+                <button type="submit" id="generate-btn">Generate My Blueprint</button>
+            </form>
+        </div>
+        <div id="result-box" class="result"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('book-form');
+        const generateBtn = document.getElementById('generate-btn');
+        const resultBox = document.getElementById('result-box');
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(form);
+            
+            const data = {
+                birth_date: formData.get('birth_date'),
+                birth_time: formData.get('birth_time'),
+                birth_location: formData.get('birth_location'),
+                target_word_count: parseInt(formData.get('target_word_count'), 10),
+            };
+            
+            generateBtn.disabled = true;
+            generateBtn.textContent = 'Weaving the Cosmos...';
+            resultBox.className = 'result loading';
+            resultBox.innerHTML = `Please wait. This can take several minutes as the AI writes and designs your personal book... <br><br> 🌌✨`;
+
+            try {
+                const response = await fetch('/generate-book/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || `An unknown error occurred (Status: ${response.status})`);
+                }
+                
+                const result = await response.json();
+                resultBox.className = 'result success';
+                resultBox.innerHTML = `<strong>Success!</strong> Your cosmic portrait is ready.<br><br><a href="${result.pdf_file}" target="_blank">Click Here to Download Your PDF</a>`;
+
+            } catch (error) {
+                resultBox.className = 'result error';
+                resultBox.innerHTML = `<strong>An Error Occurred:</strong><br>${error.message}`;
+            } finally {
+                generateBtn.disabled = false;
+                generateBtn.textContent = 'Generate My Blueprint';
+            }
+        });
+    </script>
+</body>
+</html>

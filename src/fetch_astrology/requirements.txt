@@ -1,0 +1,2 @@
+# src/fetch_astrology/requirements.txt
+requests
