@@ -1,30 +1,33 @@
-# Use a modern, stable Linux base that has the correct system libraries
+# FILE: src/generate_pdf/Dockerfile (THE FINAL, CORRECTED AND COMPLETE VERSION)
+
+# 1. Start from the modern Python 3.11 image that we know works on your machine.
 FROM python:3.11-slim-bookworm
 
-# Set the working directory
-WORKDIR /var/task
+# 2. Manually set the LAMBDA_TASK_ROOT environment variable.
+ENV LAMBDA_TASK_ROOT=/var/task
 
-# Install all the modern system dependencies that WeasyPrint needs
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    libffi-dev \
+# 3. --- THIS IS THE FINAL FIX ---
+#    Install the COMPLETE list of system libraries required by WeasyPrint.
+RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
-    libpangocairo-1.0-0 \
-    libgdk-pixbuf-2.0-0 \
-    libcairo2 && \
-    rm -rf /var/lib/apt/lists/*
+    libcairo2 \
+    libgdk-pixbuf2.0-0 \
+    libffi-dev
 
-# Copy and install Python requirements
-COPY src/generate_pdf/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 4. Set the working directory.
+WORKDIR ${LAMBDA_TASK_ROOT}
 
-# Copy your application code and fonts
-COPY src/generate_pdf/app.py .
-COPY src/generate_pdf/book_pdf_exporter.py .
-COPY src/generate_pdf/fonts ./fonts
-
-# Install and configure the AWS Lambda Runtime Interface Client
+# 5. Install the AWS Lambda Runtime Interface Client.
 RUN pip install awslambdaric
+
+# 6. Copy and install our Python libraries (weasyprint, boto3, etc.).
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# 7. Copy the rest of our application code.
+COPY . .
+
+# 8. Set the command that AWS Lambda will use to start the function.
 ENTRYPOINT [ "/usr/local/bin/python", "-m", "awslambdaric" ]
 CMD [ "app.lambda_handler" ]
