@@ -1,3 +1,5 @@
+# FILE: src/generate_pdf/app.py (FINAL, COMPLETE, AND CORRECTED)
+
 import boto3
 import os
 import json
@@ -15,32 +17,42 @@ def parse_s3_path(s3_path):
 def lambda_handler(event, context):
     print(f"Received raw event from Step Functions: {json.dumps(event, indent=2)}")
 
-    # --- START OF THE FINAL, CORRECT FIX ---
-    # The previous step's output is a dictionary wrapped in a "Payload" key.
     if 'Payload' in event and isinstance(event['Payload'], dict):
-        print("Detected nested 'Payload'. Unwrapping...")
         payload = event['Payload']
     else:
-        # This handles cases where the event is passed directly (e.g., testing)
         payload = event
     
     print(f"Using final processed payload: {json.dumps(payload, indent=2)}")
-    # --- END OF THE FINAL, CORRECT FIX ---
 
     order_id = payload.get('order_id')
-    chapters_data = payload.get('chapters_data')
     line_item_id = payload.get('line_item_id')
+    chapters_data = payload.get('chapters_data')
+    full_book_structure = payload.get('full_book_structure')
+    astrology_json_s3_path = payload.get('astrology_json_s3_path')
 
-    if not all([order_id, line_item_id, chapters_data]):
-        raise ValueError(f"Missing 'order_id', 'line_item_id', or 'chapters_data' in the processed payload. Original Event: {json.dumps(event)}")
+    if not all([order_id, line_item_id, chapters_data, full_book_structure, astrology_json_s3_path]):
+        raise ValueError("Missing critical data in the payload for PDF generation.")
 
     local_tmp_dir = f"/tmp/{order_id}/{line_item_id}"
     os.makedirs(local_tmp_dir, exist_ok=True)
 
-    book_data = {"chapters": []}
-
     try:
+        astro_bucket, astro_key = parse_s3_path(astrology_json_s3_path)
+        astro_object = s3_client.get_object(Bucket=astro_bucket, Key=astro_key)
+        astrology_json = json.loads(astro_object['Body'].read().decode('utf-8'))
+        
+        book_data = {
+            "swapi_call_text": "Symbolic data based on birth details.",
+            "swapi_json_output": json.dumps(astrology_json, indent=4),
+            "preface_text": full_book_structure.get("preface"),
+            "prologue_text": full_book_structure.get("prologue"),
+            "epilogue_text": full_book_structure.get("epilogue"),
+            "chapters": []
+        }
+
         print(f"--- Downloading assets for order: {order_id}, line item: {line_item_id} ---")
+        
+        # --- THIS IS THE RESTORED FOR LOOP ---
         for idx, chapter in enumerate(chapters_data, start=1):
             text_s3_path = chapter.get('chapter_text_s3_path')
             if not text_s3_path:
@@ -69,35 +81,21 @@ def lambda_handler(event, context):
                     local_image_path = None
 
             book_data["chapters"].append({
-                "heading": chapter.get("chapter_title", f"Chapter {idx}"),
+                "heading": chapter.get("theme_title", f"Chapter {idx}"),
                 "content": full_chapter_text,
                 "image_path": local_image_path
             })
+        # --- END OF RESTORED FOR LOOP ---
 
-        print("--- All assets prepared, generating PDF ---")
-        book_title = "The Architecture of You"
-
-        # --- START OF THE FIX ---
-        # Your exporter is designed to work from the current directory.
-        # We need to change into our temporary directory before calling it.
-        original_working_dir = os.getcwd()
-        os.chdir(local_tmp_dir)
-
-        # Call the exporter without the `output_dir` argument.
-        # It will save the file inside the current directory (`local_tmp_dir`).
+        book_title = full_book_structure.get("title", "The Architecture of You")
         local_pdf_filename = f"{line_item_id}.pdf"
-        save_book_as_pdf(
+        
+        output_pdf_path = save_book_as_pdf(
             title=book_title, 
             book_data=book_data,
-            filename=local_pdf_filename
+            filename=local_pdf_filename,
+            output_dir=local_tmp_dir
         )
-        
-        # The full path to the generated PDF
-        output_pdf_path = os.path.join(local_tmp_dir, "generated_books", local_pdf_filename)
-
-        # Change back to the original directory
-        os.chdir(original_working_dir)
-        # --- END OF THE FIX ---
 
         print(f"--- PDF generated locally at: {output_pdf_path} ---")
 

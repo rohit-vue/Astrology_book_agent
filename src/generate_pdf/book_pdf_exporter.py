@@ -5,13 +5,13 @@ import os
 from datetime import datetime
 import pathlib
 
-def save_book_as_pdf(title: str, book_data: dict, filename: str) -> str:
+def save_book_as_pdf(title: str, book_data: dict, filename: str, output_dir: str = "/tmp") -> str:
     """
     Generates the final, professionally formatted PDF using a two-pass render
     to guarantee correct page numbers in the Table of Contents.
     """
-    output_dir = "generated_books"
-    os.makedirs(output_dir, exist_ok=True)
+    # output_dir = "generated_books"
+    # os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, filename)
 
     # --- Prepare all data for the template ---
@@ -35,8 +35,8 @@ def save_book_as_pdf(title: str, book_data: dict, filename: str) -> str:
         <meta charset="UTF-8"><title>{{ book_title }}</title>
     </head>
     <body>
-        <div class="page swapi-call-page debug-page"><h1>Data Source</h1><pre class="swapi-text">{{ swapi_call_text }}</pre></div>
-        <div class="page swapi-json-page debug-page"><pre>{{ swapi_json_output }}</pre></div>
+        # <div class="page swapi-call-page debug-page"><h1>Data Source</h1><pre class="swapi-text">{{ swapi_call_text }}</pre></div>
+        # <div class="page swapi-json-page debug-page"><pre>{{ swapi_json_output }}</pre></div>
         <div class="page blank-page"></div><div class="page blank-page"></div>
         {% if image_path %}<div class="page image-page"><div class="image-container"><img src="{{ image_path }}" alt="AI Generated Book Image"></div></div>{% endif %}
         <div class="page title-page"><div class="title-main-block"><div class="title-decoration">✧</div><h1 class="book-title">{{ book_title }}</h1><div class="title-decoration">✦</div><h2 class="subtitle">A PERSONAL INTERPRETATION</h2></div></div>

@@ -37,7 +37,7 @@ resource "aws_lambda_function" "generate_pdf" {
   role          = aws_iam_role.generate_pdf_role.arn
   package_type  = "Image"
   # This points to the image you will build and push to ECR
-  image_uri = "${aws_ecr_repository.pdf_generator_repo.repository_url}:v31"
+  image_uri = "${aws_ecr_repository.pdf_generator_repo.repository_url}:v42"
 
   # PDF generation is very intensive. Give it maximum resources.
   timeout     = 900 # 15 minutes
