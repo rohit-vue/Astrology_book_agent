@@ -1,0 +1,2 @@
+# FILE: src/generate_cover/requirements.txt
+Pillow

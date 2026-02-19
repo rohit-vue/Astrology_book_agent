@@ -1,0 +1,5 @@
+weasyprint==63.1
+jinja2
+requests
+boto3
+openai

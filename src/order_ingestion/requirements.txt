@@ -1,0 +1,4 @@
+openai==1.51.2
+pydantic>=2.8,<2.10
+pydantic-core>=2.23,<2.25
+boto3

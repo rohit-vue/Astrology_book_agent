@@ -1,0 +1,33 @@
+# Python / Virtual Environments
+__pycache__/
+*.pyc
+venv/
+.env
+
+# Build Artifacts & Packages
+dist/
+
+# Other possible build folders
+build/
+package/
+lambda_package/
+
+# Ignore any .zip files in the root directory
+*.zip
+
+# Generated Content 
+generated_books/
+generated_images/
+
+
+# Terraform State & Cache
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+
+# IDE / Operating System Files
+.vscode/
+.DS_Store

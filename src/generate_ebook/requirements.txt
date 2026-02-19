@@ -1,0 +1,4 @@
+EbookLib==0.18
+lxml==4.9.3
+boto3==1.28.63
+requests==2.31.0
