@@ -110,7 +110,7 @@ def save_book_as_pdf(title: str, book_data: dict, filename: str, output_dir: str
         <div class="page title-page">
             <div class="title-main-block">
                 <div class="title-decoration">✧</div>
-                <h2 class="subtitle">{{ book_title }}</h2>
+                <h2 class="book-title">{{ book_title }}</h2>
                 <div class="title-decoration">✦</div>
             </div>
         </div>
