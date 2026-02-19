@@ -7,17 +7,17 @@ import json
 from datetime import datetime
 
 LABELS = {
-    "English":  { "chapter": "Chapter",  "index": "Contents", "preface": "Preface", "prologue": "Prologue", "epilogue": "Epilogue", "subtitle": "A PERSONAL INTERPRETATION", "created": "Created on" },
-    "Spanish":  { "chapter": "Capítulo", "index": "Índice",   "preface": "Prefacio", "prologue": "Prólogo",  "epilogue": "Epílogo",  "subtitle": "UNA INTERPRETACIÓN PERSONAL", "created": "Creado el" },
-    "French":   { "chapter": "Chapitre", "index": "Sommaire", "preface": "Préface", "prologue": "Prologue", "epilogue": "Épilogue", "subtitle": "UNE INTERPRÉTATION PERSONNELLE", "created": "Créé le" },
-    "German":   { "chapter": "Kapitel",  "index": "Inhalt",   "preface": "Vorwort", "prologue": "Prolog",   "epilogue": "Epilog",   "subtitle": "EINE PERSÖNLICHE INTERPRETATION", "created": "Erstellt am" },
-    "Italian":  { "chapter": "Capitolo", "index": "Indice",   "preface": "Prefazione", "prologue": "Prologo", "epilogue": "Epilogo", "subtitle": "UN'INTERPRETAZIONE PERSONALE", "created": "Creato il" },
-    "Portuguese": { "chapter": "Capítulo", "index": "Índice", "preface": "Prefácio", "prologue": "Prólogo", "epilogue": "Epílogo", "subtitle": "UMA INTERPRETAÇÃO PESSOAL", "created": "Criado em" },
-    "Japanese": { "chapter": "第",       "index": "目次",     "preface": "序文",     "prologue": "プロローグ", "epilogue": "エピローグ", "subtitle": "個人的な解釈", "created": "作成日" },
-    "Hindi":    { "chapter": "अध्याय",   "index": "विषय सूची", "preface": "प्रस्तावना", "prologue": "उपसंहार", "epilogue": "उपसंहार", "subtitle": "एक व्यक्तिगत व्याख्या", "created": "को बनाया गया" },
-    "Chinese":  { "chapter": "第",       "index": "目录",     "preface": "前言",     "prologue": "序幕",     "epilogue": "结语",     "subtitle": "个人解读", "created": "创建于" },
-    "Korean":   { "chapter": "제",       "index": "목차",     "preface": "서문",     "prologue": "프롤로그", "epilogue": "에필로그", "subtitle": "개인적인 해석", "created": "작성일" },
-    "Russian":  { "chapter": "Глава",    "index": "Содержание", "preface": "Предисловие", "prologue": "Пролог",   "epilogue": "Эпилог",   "subtitle": "ЛИЧНАЯ ИНТЕРПРЕТАЦИЯ", "created": "Создано" }
+    "English":  { "chapter": "Chapter",  "index": "Contents", "preface": "Preface", "prologue": "Prologue", "epilogue": "Epilogue", "subtitle": "A PERSONAL INTERPRETATION", "created": "Created on", "acknowledgments": "Acknowledgments","foreword": "Foreword"},
+    "Spanish":  { "chapter": "Capítulo", "index": "Índice",   "preface": "Prefacio", "prologue": "Prólogo",  "epilogue": "Epílogo",  "subtitle": "UNA INTERPRETACIÓN PERSONAL", "created": "Creado el", "acknowledgments": "Agradecimientos","foreword": "Preámbulo"},
+    "French":   { "chapter": "Chapitre", "index": "Sommaire", "preface": "Préface", "prologue": "Prologue", "epilogue": "Épilogue", "subtitle": "UNE INTERPRÉTATION PERSONNELLE", "created": "Créé le", "acknowledgments": "Remerciements", "foreword": "Avant-propos"},
+    "German":   { "chapter": "Kapitel",  "index": "Inhalt",   "preface": "Vorwort", "prologue": "Prolog",   "epilogue": "Epilog",   "subtitle": "EINE PERSÖNLICHE INTERPRETATION", "created": "Erstellt am", "acknowledgments": "Danksagung","foreword": "Geleitwort"},
+    "Italian":  { "chapter": "Capitolo", "index": "Indice",   "preface": "Prefazione", "prologue": "Prologo", "epilogue": "Epilogo", "subtitle": "UN'INTERPRETAZIONE PERSONALE", "created": "Creato il", "acknowledgments": "Ringraziamenti","foreword": "Premessa"},
+    "Portuguese": { "chapter": "Capítulo", "index": "Índice", "preface": "Prefácio", "prologue": "Prólogo", "epilogue": "Epílogo", "subtitle": "UMA INTERPRETAÇÃO PESSOAL", "created": "Criado em", "acknowledgments": "Agradecimentos", "foreword": "Apresentação"},
+    "Japanese": { "chapter": "第",       "index": "目次",     "preface": "序文",     "prologue": "プロローグ", "epilogue": "エピローグ", "subtitle": "個人的な解釈", "created": "作成日", "acknowledgments": "謝辞","foreword": "まえがき"},
+    "Hindi":    { "chapter": "अध्याय",   "index": "विषय सूची", "preface": "प्रस्तावना", "prologue": "उपसंहार", "epilogue": "उपसंहार", "subtitle": "एक व्यक्तिगत व्याख्या", "created": "को बनाया गया", "acknowledgments": "आभार", "foreword": "प्राक्कथन"},
+    "Chinese":  { "chapter": "第",       "index": "目录",     "preface": "前言",     "prologue": "序幕",     "epilogue": "结语",     "subtitle": "个人解读", "created": "创建于", "acknowledgments": "致谢" , "foreword": "序言"},
+    "Korean":   { "chapter": "제",       "index": "목차",     "preface": "서문",     "prologue": "프롤로그", "epilogue": "에필로그", "subtitle": "개인적인 해석", "created": "작성일", "acknowledgments": "감사의 말","foreword": "머리말"},
+    "Russian":  { "chapter": "Глава",    "index": "Содержание", "preface": "Предисловие", "prologue": "Пролог",   "epilogue": "Эпилог",   "subtitle": "ЛИЧНАЯ ИНТЕРПРЕТАЦИЯ", "created": "Создано", "acknowledgments": "Благодарности","foreword": "Вступление"}
 }
 
 def load_text_asset(filename):
@@ -43,16 +43,41 @@ def flatten_pdf_fonts(input_path, output_path):
     cmd = [ "gs", "-o", output_path, "-sDEVICE=pdfwrite", "-dNoOutputFonts", "-dCompatibilityLevel=1.4", input_path ]
     subprocess.run(cmd, check=True)
 
-def save_book_as_pdf(title: str, book_data: dict, filename: str, output_dir: str = "/tmp", language: str = "English") -> str:
+def save_book_as_pdf(title: str, book_data: dict, filename: str, output_dir: str = "/tmp", language: str = "English", dynamic_foreword: str = None) -> str:
     output_path = os.path.join(output_dir, filename)
-    
+
     lang_key = language.title() 
     L = LABELS.get(lang_key, LABELS["English"])
     
     chapter_suffix = "章" if lang_key in ["Japanese", "Chinese"] else "장" if lang_key == "Korean" else ""
-    footer_date = f"{L['created']} {datetime.now().strftime('%Y-%m-%d')}"
     
-    foreword_text = load_text_asset("foreword.txt")
+    bd = book_data.get('birth_data', {})
+    
+    year = bd.get('year', 2000)
+    month = bd.get('month', 1)
+    day = bd.get('day', 1)
+    hour = bd.get('hour', 0)
+    minute = bd.get('min', 0)
+    lat = bd.get('lat', 0.0)
+    lon = bd.get('lon', 0.0)
+
+    birth_str = f"{year}-{int(month):02d}-{int(day):02d} {int(hour):02d}:{int(minute):02d}"
+    lat_str = str(lat)
+    lon_str = str(lon)
+    
+    today_str = datetime.now().strftime('%Y-%m-%d')
+
+    footer_text = f"Written on {today_str}\nWritten for {birth_str} ({lat_str}, {lon_str})\nPrinted by Lulu.com"
+    
+    print(f"[DEBUG] FINAL FOOTER SENT TO PDF:\n{footer_text}")
+    
+    footer_date = footer_text 
+
+    if dynamic_foreword:
+        foreword_text = dynamic_foreword
+    else:
+        foreword_text = load_text_asset("foreword.txt")
+
     ack_names = load_json_asset("acknowledgments.json")
 
     meta = book_data.get('metadata', {})
@@ -68,7 +93,6 @@ def save_book_as_pdf(title: str, book_data: dict, filename: str, output_dir: str
     
     book_data['force_blank_before_epilogue'] = False
 
-    # HTML (Uses variables instead of hardcoded text)
     html_template = Template("""
     <!DOCTYPE html>
     <html lang="{{ lang }}">
@@ -86,16 +110,13 @@ def save_book_as_pdf(title: str, book_data: dict, filename: str, output_dir: str
         <div class="page title-page">
             <div class="title-main-block">
                 <div class="title-decoration">✧</div>
-                <h1 class="book-title">Luminary Blueprint</h1>
                 <h2 class="subtitle">{{ book_title }}</h2>
                 <div class="title-decoration">✦</div>
             </div>
         </div>
         <div class="page print-date-page">
-            <p>{{ footer_date }}</p>
-            <p>Printed by Lulu.com</p>
+            <div style="white-space: pre-wrap; text-align: center; line-height: 2.0;">{{ footer_date }}</div>
         </div>
-
         <!-- DEDICATION -->
         <div class="page title-page">
             <div class="half-title">{{ dedication_title }}</div>
@@ -104,9 +125,16 @@ def save_book_as_pdf(title: str, book_data: dict, filename: str, output_dir: str
         
         <!-- FOREWORD (Loaded from file) -->
         <div class="page content-page" id="foreword">
-            <h2>{{ labels.foreword }}</h2>
+            <!-- Title -->
+            <h2 style="margin-bottom: 0.5em;">{{ labels.foreword }}</h2>
+            
+            <!-- Subtitle (Author Name) - Reduced size to 11pt -->
+            <div style="text-align: center; font-size: 11pt; margin-bottom: 3em; font-style: italic; font-family: 'Baskerville', serif;">
+                Olamide Shokunbi
+            </div>
+
             <div class="content-block">
-                {% for p in foreword_text.split('\\n') %}
+                {% for p in foreword_text.split('\n') %}
                     {% if p.strip() %}<p>{{ p }}</p>{% endif %}
                 {% endfor %}
             </div>

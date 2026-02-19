@@ -5,64 +5,19 @@ import pathlib
 import subprocess
 import json
 from datetime import datetime
-import openai 
 
 LABELS = {
-    "English": {
-        "chapter": "Chapter", "index": "Contents", "preface": "Preface", "prologue": "Prologue",
-        "epilogue": "Epilogue", "subtitle": "A PERSONAL INTERPRETATION", "created": "Created on",
-        "acknowledgments": "Acknowledgments", "foreword": "Foreword"
-    },
-    "Spanish": {
-        "chapter": "Capítulo", "index": "Índice", "preface": "Prefacio", "prologue": "Prólogo",
-        "epilogue": "Epílogo", "subtitle": "UNA INTERPRETACIÓN PERSONAL", "created": "Creado el",
-        "acknowledgments": "Agradecimientos", "foreword": "Preámbulo"
-    },
-    "French": {
-        "chapter": "Chapitre", "index": "Sommaire", "preface": "Préface", "prologue": "Prologue",
-        "epilogue": "Épilogue", "subtitle": "UNE INTERPRÉTATION PERSONNELLE", "created": "Créé le",
-        "acknowledgments": "Remerciements", "foreword": "Avant-propos"
-    },
-    "German": {
-        "chapter": "Kapitel", "index": "Inhalt", "preface": "Vorwort", "prologue": "Prolog",
-        "epilogue": "Epilog", "subtitle": "EINE PERSÖNLICHE INTERPRETATION", "created": "Erstellt am",
-        "acknowledgments": "Danksagung", "foreword": "Geleitwort"
-    },
-    "Italian": {
-        "chapter": "Capitolo", "index": "Indice", "preface": "Prefazione", "prologue": "Prologo",
-        "epilogue": "Epilogo", "subtitle": "UN'INTERPRETAZIONE PERSONALE", "created": "Creato il",
-        "acknowledgments": "Ringraziamenti", "foreword": "Premessa"
-    },
-    "Portuguese": {
-        "chapter": "Capítulo", "index": "Índice", "preface": "Prefácio", "prologue": "Prólogo",
-        "epilogue": "Epílogo", "subtitle": "UMA INTERPRETAÇÃO PESSOAL", "created": "Criado em",
-        "acknowledgments": "Agradecimentos", "foreword": "Apresentação"
-    },
-    "Japanese": {
-        "chapter": "第", "index": "目次", "preface": "序文", "prologue": "プロローグ",
-        "epilogue": "エピローグ", "subtitle": "個人的な解釈", "created": "作成日",
-        "acknowledgments": "謝辞", "foreword": "まえがき"
-    },
-    "Hindi": {
-        "chapter": "अध्याय", "index": "विषय सूची", "preface": "प्रस्तावना", "prologue": "उपसंहार",
-        "epilogue": "उपसंहार", "subtitle": "एक व्यक्तिगत व्याख्या", "created": "को बनाया गया",
-        "acknowledgments": "आभार", "foreword": "प्राक्कथन"
-    },
-    "Chinese": {
-        "chapter": "第", "index": "目录", "preface": "前言", "prologue": "序幕",
-        "epilogue": "结语", "subtitle": "个人解读", "created": "创建于",
-        "acknowledgments": "致谢", "foreword": "序言"
-    },
-    "Korean": {
-        "chapter": "제", "index": "목차", "preface": "서문", "prologue": "프롤로그",
-        "epilogue": "에필로그", "subtitle": "개인적인 해석", "created": "작성일",
-        "acknowledgments": "감사의 말", "foreword": "머리말"
-    },
-    "Russian": {
-        "chapter": "Глава", "index": "Содержание", "preface": "Предисловие", "prologue": "Пролог",
-        "epilogue": "Эпилог", "subtitle": "ЛИЧНАЯ ИНТЕРПРЕТАЦИЯ", "created": "Создано",
-        "acknowledgments": "Благодарности", "foreword": "Вступление"
-    }
+    "English":  { "chapter": "Chapter",  "index": "Contents", "preface": "Preface", "prologue": "Prologue", "epilogue": "Epilogue", "subtitle": "A PERSONAL INTERPRETATION", "created": "Created on", "acknowledgments": "Acknowledgments","foreword": "Foreword"},
+    "Spanish":  { "chapter": "Capítulo", "index": "Índice",   "preface": "Prefacio", "prologue": "Prólogo",  "epilogue": "Epílogo",  "subtitle": "UNA INTERPRETACIÓN PERSONAL", "created": "Creado el", "acknowledgments": "Agradecimientos","foreword": "Preámbulo"},
+    "French":   { "chapter": "Chapitre", "index": "Sommaire", "preface": "Préface", "prologue": "Prologue", "epilogue": "Épilogue", "subtitle": "UNE INTERPRÉTATION PERSONNELLE", "created": "Créé le", "acknowledgments": "Remerciements", "foreword": "Avant-propos"},
+    "German":   { "chapter": "Kapitel",  "index": "Inhalt",   "preface": "Vorwort", "prologue": "Prolog",   "epilogue": "Epilog",   "subtitle": "EINE PERSÖNLICHE INTERPRETATION", "created": "Erstellt am", "acknowledgments": "Danksagung","foreword": "Geleitwort"},
+    "Italian":  { "chapter": "Capitolo", "index": "Indice",   "preface": "Prefazione", "prologue": "Prologo", "epilogue": "Epilogo", "subtitle": "UN'INTERPRETAZIONE PERSONALE", "created": "Creato il", "acknowledgments": "Ringraziamenti","foreword": "Premessa"},
+    "Portuguese": { "chapter": "Capítulo", "index": "Índice", "preface": "Prefácio", "prologue": "Prólogo", "epilogue": "Epílogo", "subtitle": "UMA INTERPRETAÇÃO PESSOAL", "created": "Criado em", "acknowledgments": "Agradecimentos", "foreword": "Apresentação"},
+    "Japanese": { "chapter": "第",       "index": "目次",     "preface": "序文",     "prologue": "プロローグ", "epilogue": "エピローグ", "subtitle": "個人的な解釈", "created": "作成日", "acknowledgments": "謝辞","foreword": "まえがき"},
+    "Hindi":    { "chapter": "अध्याय",   "index": "विषय सूची", "preface": "प्रस्तावना", "prologue": "उपसंहार", "epilogue": "उपसंहार", "subtitle": "एक व्यक्तिगत व्याख्या", "created": "को बनाया गया", "acknowledgments": "आभार", "foreword": "प्राक्कथन"},
+    "Chinese":  { "chapter": "第",       "index": "目录",     "preface": "前言",     "prologue": "序幕",     "epilogue": "结语",     "subtitle": "个人解读", "created": "创建于", "acknowledgments": "致谢" , "foreword": "序言"},
+    "Korean":   { "chapter": "제",       "index": "목차",     "preface": "서문",     "prologue": "프롤로그", "epilogue": "에필로그", "subtitle": "개인적인 해석", "created": "작성일", "acknowledgments": "감사의 말","foreword": "머리말"},
+    "Russian":  { "chapter": "Глава",    "index": "Содержание", "preface": "Предисловие", "prologue": "Пролог",   "epilogue": "Эпилог",   "subtitle": "ЛИЧНАЯ ИНТЕРПРЕТАЦИЯ", "created": "Создано", "acknowledgments": "Благодарности","foreword": "Вступление"}
 }
 
 def load_text_asset(filename):
@@ -88,14 +43,7 @@ def flatten_pdf_fonts(input_path, output_path):
     cmd = [ "gs", "-o", output_path, "-sDEVICE=pdfwrite", "-dNoOutputFonts", "-dCompatibilityLevel=1.4", input_path ]
     subprocess.run(cmd, check=True)
 
-def save_book_as_pdf(
-    title: str,
-    book_data: dict,
-    filename: str,
-    output_dir: str = "/tmp",
-    language: str = "English",
-    openai_api_key: str = None
-) -> tuple[str, int]:
+def save_book_as_pdf(title: str, book_data: dict, filename: str, output_dir: str = "/tmp", language: str = "English", dynamic_foreword: str = None) -> str:
     output_path = os.path.join(output_dir, filename)
 
     lang_key = language.title() 
@@ -118,25 +66,17 @@ def save_book_as_pdf(
     lon_str = str(lon)
     
     today_str = datetime.now().strftime('%Y-%m-%d')
-    footer_text = f"Written on {today_str}\nWritten for {birth_str} ({lat_str}, {lon_str})\nPrinted by Lulu.com"
-    footer_date = footer_text
-    print(f"[DEBUG] FINAL FOOTER SENT TO PDF:\n{footer_text}")
 
-    foreword_text = load_text_asset("foreword.txt")
-    if language.lower() != "english" and openai_api_key:
-        print(f"Translating Foreword to {language}...")
-        try:
-            client = openai.OpenAI(api_key=openai_api_key)
-            trans_prompt = f"Translate the following text into {language}. Maintain the poetic, warm, and serious tone. Do not add commentary.\n\nTEXT:\n{foreword_text}"
-            trans_resp = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": trans_prompt}],
-                temperature=0.3
-            )
-            foreword_text = trans_resp.choices[0].message.content.strip()
-            print("Translation successful.")
-        except Exception as e:
-            print(f"Foreword translation failed, falling back to English. Error: {e}")
+    footer_text = f"Written on {today_str}\nWritten for {birth_str} ({lat_str}, {lon_str})\nPrinted by Lulu.com"
+    
+    print(f"[DEBUG] FINAL FOOTER SENT TO PDF:\n{footer_text}")
+    
+    footer_date = footer_text 
+
+    if dynamic_foreword:
+        foreword_text = dynamic_foreword
+    else:
+        foreword_text = load_text_asset("foreword.txt")
 
     ack_names = load_json_asset("acknowledgments.json")
 
@@ -170,7 +110,7 @@ def save_book_as_pdf(
         <div class="page title-page">
             <div class="title-main-block">
                 <div class="title-decoration">✧</div>
-                <h1 class="book-title">{{ book_title }}</h1>
+                <h2 class="subtitle">{{ book_title }}</h2>
                 <div class="title-decoration">✦</div>
             </div>
         </div>
@@ -185,10 +125,14 @@ def save_book_as_pdf(
         
         <!-- FOREWORD (Loaded from file) -->
         <div class="page content-page" id="foreword">
-            <h2 style="margin-bottom: 0.5em;">{{ labels.get('foreword', 'Foreword') }}</h2>
+            <!-- Title -->
+            <h2 style="margin-bottom: 0.5em;">{{ labels.foreword }}</h2>
+            
+            <!-- Subtitle (Author Name) - Reduced size to 11pt -->
             <div style="text-align: center; font-size: 11pt; margin-bottom: 3em; font-style: italic; font-family: 'Baskerville', serif;">
                 Olamide Shokunbi
             </div>
+
             <div class="content-block">
                 {% for p in foreword_text.split('\n') %}
                     {% if p.strip() %}<p>{{ p }}</p>{% endif %}
