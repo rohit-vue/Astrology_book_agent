@@ -1,11 +1,15 @@
+# src/generate_pdf/app.py
+
 import boto3
-import os
 import json
+import os
 from book_pdf_exporter import save_book_as_pdf
 from urllib.parse import urlparse
 
 s3_client = boto3.client('s3')
+secrets_manager_client = boto3.client('secretsmanager')
 ARTIFACTS_BUCKET = os.environ.get('ARTIFACTS_BUCKET')
+API_KEYS_SECRET_ARN = os.environ.get('API_KEYS_SECRET_ARN')
 
 def parse_s3_path(s3_path):
     parsed = urlparse(s3_path, allow_fragments=False)
@@ -15,31 +19,27 @@ def lambda_handler(event, context):
     print(f"Received raw event: {json.dumps(event, indent=2)}")
     payload = event.get('Payload', event)
     
+    openai_api_key = None
+    try:
+        secret_payload = secrets_manager_client.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
+        openai_api_key = json.loads(secret_payload['SecretString']).get('OpenAIKey')
+    except Exception as e:
+        print(f"Could not retrieve OpenAI key, translation will be skipped. Error: {e}")
+
     order_id = payload.get('order_id')
     line_item_id = payload.get('line_item_id')
     chapters_data = payload.get('chapters_data')
     full_book_structure = payload.get('full_book_structure')
-    language = payload.get('language', 'English') 
+    language = payload.get('language', 'English')
     birth_data = payload.get('birth_data', {})
     
     sections = payload.get('generated_sections', {})
-    preface_text = sections.get("preface") or sections.get("Preface")
-    prologue_text = sections.get("prologue") or sections.get("Prologue")
-    epilogue_text = sections.get("epilogue") or sections.get("Epilogue")
-    foreword_text = sections.get("foreword", "") 
-
+    preface_text = sections.get("preface")
+    prologue_text = sections.get("prologue")
+    epilogue_text = sections.get("epilogue")
     if not preface_text: preface_text = full_book_structure.get("preface_text")
     if not prologue_text: prologue_text = full_book_structure.get("prologue_text")
     if not epilogue_text: epilogue_text = full_book_structure.get("epilogue_text")
-
-    if not preface_text: preface_text = full_book_structure.get("structure", {}).get("preface_text")
-    if not prologue_text: prologue_text = full_book_structure.get("structure", {}).get("prologue_text")
-    if not epilogue_text: epilogue_text = full_book_structure.get("structure", {}).get("epilogue_text")
-
-    print(f"DEBUG FINDINGS:")
-    print(f"Preface found: {bool(preface_text)} (Len: {len(preface_text) if preface_text else 0})")
-    print(f"Prologue found: {bool(prologue_text)} (Len: {len(prologue_text) if prologue_text else 0})")
-    print(f"Epilogue found: {bool(epilogue_text)} (Len: {len(epilogue_text) if epilogue_text else 0})")
 
     if not all([order_id, line_item_id, chapters_data, full_book_structure]):
         raise ValueError("Missing critical data for PDF generation.")
@@ -50,8 +50,7 @@ def lambda_handler(event, context):
     try:
         metadata = full_book_structure.get("metadata", {})
         if not metadata: metadata = full_book_structure.get("book_metadata", {})
-        
-        book_title = metadata.get("title", "The Architecture of You") 
+        book_title = metadata.get("title", "The Architecture of You")
 
         book_data = {
             "metadata": metadata,
@@ -84,7 +83,7 @@ def lambda_handler(event, context):
             filename=local_pdf_filename,
             output_dir=local_tmp_dir,
             language=language,
-            dynamic_foreword=foreword_text
+            openai_api_key=openai_api_key
         )
 
         final_pdf_s3_key = f"final-pdfs/{order_id}/{line_item_id}.pdf"

@@ -127,7 +127,6 @@ def lambda_handler(event, context):
         return event
 
     except Exception as e:
-        # Improved logging to see if it's a 401 (Auth) or 500 (Server) error
         error_msg = str(e)
         if hasattr(e, 'response') and e.response is not None:
              error_msg += f" | Body: {e.response.text}"

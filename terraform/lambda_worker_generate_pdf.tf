@@ -31,7 +31,7 @@ resource "aws_lambda_function" "generate_pdf" {
   function_name = "${var.project_name}-GeneratePDF"
   role          = aws_iam_role.generate_pdf_role.arn
   package_type  = "Image"
-  image_uri = "${aws_ecr_repository.pdf_generator_repo.repository_url}@sha256:7c29fecd407d6c538010e4c11b6c9ccac30427c54bb6fa78ae9767a0d74559d7"
+  image_uri = "${aws_ecr_repository.pdf_generator_repo.repository_url}:latest"
   architectures = ["x86_64"]
   timeout     = 900
   memory_size = 3008
