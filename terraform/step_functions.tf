@@ -41,9 +41,14 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
   role_arn = aws_iam_role.step_functions_role.arn
 
   definition = jsonencode({
-    Comment = "Generates book interior, then cover sequentially, then assembles final payload for Lulu."
-    StartAt = "ProcessAllBooksInParallel"
+    Comment = "Generates book interior and cover with a scheduled start delay."
+    StartAt = "WaitUntilScheduledTime"
     States = {
+      WaitUntilScheduledTime = {
+        Type            = "Wait"
+        TimestampPath   = "$.factory_start_at"
+        Next            = "ProcessAllBooksInParallel"
+      },
       ProcessAllBooksInParallel = {
         Type      = "Map",
         ItemsPath = "$.books",

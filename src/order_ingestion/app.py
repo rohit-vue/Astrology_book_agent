@@ -4,7 +4,7 @@ import os
 import hmac
 import hashlib
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from openai import OpenAI
 
 sqs = boto3.client('sqs')
@@ -17,8 +17,24 @@ ORDERS_TABLE_NAME = os.environ.get('ORDERS_TABLE_NAME')
 BOOK_ORDERS_QUEUE_URL = os.environ.get('BOOK_ORDERS_QUEUE_URL')
 RAW_PAYLOADS_BUCKET = os.environ.get('RAW_PAYLOADS_BUCKET')
 API_KEYS_SECRET_ARN = os.environ.get('API_KEYS_SECRET_ARN')
+FACTORY_START_DELAY_HMS = os.environ.get('FACTORY_START_DELAY_HMS', '00:00:00')
 
 SHOPIFY_WEBHOOK_SECRET = None
+
+def parse_hms_delay(value: str) -> timedelta:
+    parts = (value or "00:00:00").strip().split(":")
+    if len(parts) != 3:
+        raise ValueError("HH:MM:SS format expected.")
+    hours, minutes, seconds = [int(x) for x in parts]
+    if hours < 0 or minutes < 0 or seconds < 0 or minutes >= 60 or seconds >= 60:
+        raise ValueError("Invalid HH:MM:SS value.")
+    return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+
+def parse_iso_datetime(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 def build_data_extraction_prompt(date_time_str: str, location_str: str) -> str:
     user_prompt = f"Time: {date_time_str}, Location: {location_str}"
@@ -82,6 +98,21 @@ def lambda_handler(event, context):
     payload_string = raw_body_bytes.decode('utf-8')
     payload = json.loads(payload_string)
     order_id = f"shpfy_{payload['id']}"
+
+    webhook_created_at_raw = payload.get('created_at')
+    try:
+        webhook_created_at = parse_iso_datetime(webhook_created_at_raw) if webhook_created_at_raw else datetime.now(timezone.utc)
+    except Exception:
+        print(f"Invalid Shopify created_at '{webhook_created_at_raw}', using current UTC time.")
+        webhook_created_at = datetime.now(timezone.utc)
+
+    try:
+        start_delay = parse_hms_delay(FACTORY_START_DELAY_HMS)
+    except Exception:
+        print(f"Invalid FACTORY_START_DELAY_HMS '{FACTORY_START_DELAY_HMS}', using 00:00:00.")
+        start_delay = timedelta()
+
+    factory_start_at = webhook_created_at + start_delay
 
     print(f"DEBUG SHIPPING LINES: {json.dumps(payload.get('shipping_lines', []))}")
     
@@ -156,6 +187,9 @@ def lambda_handler(event, context):
             "shopify_payload_s3_path": f"s3://{RAW_PAYLOADS_BUCKET}/{s3_key}",
             "customer_details": payload.get('customer', {}),
             "shipping_address": payload.get('shipping_address', {}),
+            "webhook_created_at": webhook_created_at.isoformat(),
+            "factory_start_delay_hms": FACTORY_START_DELAY_HMS,
+            "factory_start_at": factory_start_at.isoformat(),
             "books": books_for_workflow
         }
         
@@ -168,7 +202,11 @@ def lambda_handler(event, context):
             'customer_email': payload.get('customer', {}).get('email')
         })
 
-        sqs.send_message(QueueUrl=BOOK_ORDERS_QUEUE_URL, MessageBody=json.dumps(clean_payload))
+        now_utc = datetime.now(timezone.utc)
+        remaining_seconds = int((factory_start_at.astimezone(timezone.utc) - now_utc).total_seconds())
+        initial_delay = max(0, min(900, remaining_seconds))
+        print(f"Queueing order {order_id} with initial delay: {initial_delay}s (target start: {factory_start_at.isoformat()})")
+        sqs.send_message(QueueUrl=BOOK_ORDERS_QUEUE_URL, MessageBody=json.dumps(clean_payload), DelaySeconds=initial_delay)
         return {'statusCode': 200, 'body': 'OK'}
         
     except Exception as e:

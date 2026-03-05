@@ -1,22 +1,60 @@
 import boto3
 import json
 import os
-import requests
-from openai import OpenAI
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 import io
-import textwrap
 
 s3_client = boto3.client('s3')
-secrets_manager_client = boto3.client('secretsmanager')
-API_KEYS_SECRET_ARN = os.environ.get('API_KEYS_SECRET_ARN')
 ARTIFACTS_BUCKET = os.environ.get('ARTIFACTS_BUCKET')
-openai_client = OpenAI(api_key="dummy")
 
-def build_cover_prompt(birth_data: dict) -> str:
-    lat = birth_data.get('lat', '0.0'); lon = birth_data.get('lon', '0.0')
-    year = birth_data.get('year', 2000); month = birth_data.get('month', 1); day = birth_data.get('day', 1)
-    return f"A beautiful, abstract cosmic vista representing the night sky over {lat}, {lon} on {year}-{month}-{day}. Style: ethereal, swirling cosmic dust, intricate fractal patterns, glowing filaments. Rich, vibrant color palette. CRITICAL: NO text, borders, or figures."
+PROTECTIVE_COVER_TEXT = {
+    "english": "Remove Protective Cover Before Reading",
+    "spanish": "Retire la cubierta protectora antes de leer",
+    "french": "Retirez la couverture de protection avant de lire",
+    "german": "Schutzumschlag vor dem Lesen entfernen",
+    "italian": "Rimuovere la copertina protettiva prima di leggere",
+    "portuguese": "Remova a capa protetora antes de ler",
+    "japanese": "読む前に保護カバーを外してください",
+    "hindi": "पढ़ने से पहले सुरक्षात्मक कवर हटाएं",
+    "chinese": "阅读前请取下保护封套",
+    "korean": "읽기 전에 보호 커버를 제거하세요",
+    "russian": "Снимите защитную обложку перед чтением"
+}
+
+def resolve_cover_text(language: str) -> str:
+    return PROTECTIVE_COVER_TEXT.get((language or "English").strip().lower(), PROTECTIVE_COVER_TEXT["english"])
+
+def wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int):
+    words = text.split()
+    if not words:
+        return [text]
+
+    lines = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        bbox = draw.textbbox((0, 0), candidate, font=font)
+        if (bbox[2] - bbox[0]) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+def draw_centered_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, box: tuple[int, int, int, int]):
+    x, y, w, h = box
+    lines = wrap_text(draw, text, font, max(1, int(w * 0.9)))
+    bbox_sample = font.getbbox("Aj")
+    line_height = (bbox_sample[3] - bbox_sample[1]) + 18
+    total_height = len(lines) * line_height
+    current_y = y + (h - total_height) // 2
+
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_w = bbox[2] - bbox[0]
+        draw.text((x + (w - text_w) // 2, current_y), line, font=font, fill=(255, 255, 255))
+        current_y += line_height
 
 def lambda_handler(event, context):
     print(f"GenerateCover received event: {json.dumps(event, indent=2)}")
@@ -26,27 +64,12 @@ def lambda_handler(event, context):
     line_item_id = payload.get('line_item_id')
     birth_data = payload.get('birth_data')
     page_count = payload.get('page_count')
-    
-    full_structure = payload.get('full_book_structure', {})
-    metadata = full_structure.get('metadata', {})
-    if not metadata: metadata = full_structure.get('book_metadata', {})
-    
-    book_title = metadata.get('title')
-    if not book_title:
-        book_title = payload.get('cover_title', 'A Personal Journey')
+    language = payload.get('language', 'English')
 
     if not all([order_id, line_item_id, birth_data, page_count]):
         raise ValueError("Missing required fields.")
 
     try:
-        secret_payload = secrets_manager_client.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
-        openai_client.api_key = json.loads(secret_payload['SecretString']).get('OpenAIKey')
-        
-        prompt = build_cover_prompt(birth_data)
-        image_response = openai_client.images.generate(model="dall-e-3", prompt=prompt, size="1024x1792", quality="hd", n=1)
-        image_data = requests.get(image_response.data[0].url, timeout=60).content
-        dalle_art = Image.open(io.BytesIO(image_data)).convert('RGB')
-
         DPI = 300
         PAGE_MULTIPLIER = 0.002252 
         COVER_WIDTH = 5.895  
@@ -64,50 +87,22 @@ def lambda_handler(event, context):
         h_px = int(TOTAL_H_INCH * DPI)
         
         canvas = Image.new('RGB', (w_px, h_px), 'black')
-
-        ART_TARGET_W_INCH = COVER_WIDTH + BLEED
-        ART_TARGET_H_INCH = COVER_HEIGHT + (BLEED * 2)
-        
-        art_w_px = int(ART_TARGET_W_INCH * DPI)
-        art_h_px = int(ART_TARGET_H_INCH * DPI)
-        
-        front_art = ImageOps.fit(dalle_art, (art_w_px, art_h_px), Image.Resampling.LANCZOS)
-        
-        paste_x = int((BLEED + FLAP_WIDTH + COVER_WIDTH + spine_width) * DPI)
-        paste_y = 0 
-        
-        canvas.paste(front_art, (paste_x, paste_y))
         
         draw = ImageDraw.Draw(canvas)
         try:
             font_path = os.path.join(os.environ.get('LAMBDA_TASK_ROOT', ''), 'fonts', 'LibreBaskerville-Regular.ttf')
             if not os.path.exists(font_path): font_path = "fonts/LibreBaskerville-Regular.ttf"
-            font = ImageFont.truetype(font_path, 80)
+            font = ImageFont.truetype(font_path, 64)
         except:
             font = ImageFont.load_default()
 
-        visual_center_x = paste_x + int((COVER_WIDTH * DPI) / 2)
-        visual_center_y = int(h_px / 2)
+        front_x = int((BLEED + FLAP_WIDTH + COVER_WIDTH + spine_width) * DPI)
+        front_y = int(BLEED * DPI)
+        front_w = int(COVER_WIDTH * DPI)
+        front_h = int(COVER_HEIGHT * DPI)
 
-        lines = textwrap.wrap(book_title, width=18) 
-        
-        bbox_sample = font.getbbox("Aj")
-        line_height = (bbox_sample[3] - bbox_sample[1]) + 20 
-        total_block_height = len(lines) * line_height
-        
-        current_y = visual_center_y - (total_block_height / 2)
-
-        for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            text_w = bbox[2] - bbox[0]
-            
-            draw.text(
-                (visual_center_x - text_w/2, current_y), 
-                line, 
-                font=font, 
-                fill=(255, 255, 255)
-            )
-            current_y += line_height
+        cover_text = resolve_cover_text(language)
+        draw_centered_text(draw, cover_text, font, (front_x, front_y, front_w, front_h))
         
         final_buffer = io.BytesIO()
         canvas.save(final_buffer, format='PDF', resolution=DPI)
@@ -115,8 +110,18 @@ def lambda_handler(event, context):
         
         key = f"book-covers/{order_id}/{line_item_id}_dust_jacket_final.pdf"
         s3_client.put_object(Bucket=ARTIFACTS_BUCKET, Key=key, Body=final_buffer, ContentType='application/pdf')
+
+        front_cover = canvas.crop((front_x, front_y, front_x + front_w, front_y + front_h))
+        front_cover = ImageOps.fit(front_cover, (1024, 1792), Image.Resampling.LANCZOS)
+        front_cover_buffer = io.BytesIO()
+        front_cover.save(front_cover_buffer, format='JPEG', quality=95)
+        front_cover_buffer.seek(0)
+
+        front_key = f"book-covers/{order_id}/{line_item_id}_front_cover.jpg"
+        s3_client.put_object(Bucket=ARTIFACTS_BUCKET, Key=front_key, Body=front_cover_buffer, ContentType='image/jpeg')
         
         payload["cover_image_s3_url"] = f"https://{ARTIFACTS_BUCKET}.s3.amazonaws.com/{key}"
+        payload["hardcover_front_image_url"] = f"https://{ARTIFACTS_BUCKET}.s3.amazonaws.com/{front_key}"
         return payload
 
     except Exception as e:

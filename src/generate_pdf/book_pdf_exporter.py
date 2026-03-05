@@ -16,53 +16,67 @@ LABELS = {
     "Spanish": {
         "chapter": "Capítulo", "index": "Índice", "preface": "Prefacio", "prologue": "Prólogo",
         "epilogue": "Epílogo", "subtitle": "UNA INTERPRETACIÓN PERSONAL", "created": "Creado el",
-        "acknowledgments": "Agradecimientos", "foreword": "Preámbulo"
+        "acknowledgments": "Agradecimientos"
     },
     "French": {
         "chapter": "Chapitre", "index": "Sommaire", "preface": "Préface", "prologue": "Prologue",
         "epilogue": "Épilogue", "subtitle": "UNE INTERPRÉTATION PERSONNELLE", "created": "Créé le",
-        "acknowledgments": "Remerciements", "foreword": "Avant-propos"
+        "acknowledgments": "Remerciements"
     },
     "German": {
         "chapter": "Kapitel", "index": "Inhalt", "preface": "Vorwort", "prologue": "Prolog",
         "epilogue": "Epilog", "subtitle": "EINE PERSÖNLICHE INTERPRETATION", "created": "Erstellt am",
-        "acknowledgments": "Danksagung", "foreword": "Geleitwort"
+        "acknowledgments": "Danksagung"
     },
     "Italian": {
         "chapter": "Capitolo", "index": "Indice", "preface": "Prefazione", "prologue": "Prologo",
         "epilogue": "Epilogo", "subtitle": "UN'INTERPRETAZIONE PERSONALE", "created": "Creato il",
-        "acknowledgments": "Ringraziamenti", "foreword": "Premessa"
+        "acknowledgments": "Ringraziamenti"
     },
     "Portuguese": {
         "chapter": "Capítulo", "index": "Índice", "preface": "Prefácio", "prologue": "Prólogo",
         "epilogue": "Epílogo", "subtitle": "UMA INTERPRETAÇÃO PESSOAL", "created": "Criado em",
-        "acknowledgments": "Agradecimentos", "foreword": "Apresentação"
+        "acknowledgments": "Agradecimentos"
     },
     "Japanese": {
         "chapter": "第", "index": "目次", "preface": "序文", "prologue": "プロローグ",
         "epilogue": "エピローグ", "subtitle": "個人的な解釈", "created": "作成日",
-        "acknowledgments": "謝辞", "foreword": "まえがき"
+        "acknowledgments": "謝辞"
     },
     "Hindi": {
         "chapter": "अध्याय", "index": "विषय सूची", "preface": "प्रस्तावना", "prologue": "उपसंहार",
         "epilogue": "उपसंहार", "subtitle": "एक व्यक्तिगत व्याख्या", "created": "को बनाया गया",
-        "acknowledgments": "आभार", "foreword": "प्राक्कथन"
+        "acknowledgments": "आभार"
     },
     "Chinese": {
         "chapter": "第", "index": "目录", "preface": "前言", "prologue": "序幕",
         "epilogue": "结语", "subtitle": "个人解读", "created": "创建于",
-        "acknowledgments": "致谢", "foreword": "序言"
+        "acknowledgments": "致谢"
     },
     "Korean": {
         "chapter": "제", "index": "목차", "preface": "서문", "prologue": "프롤로그",
         "epilogue": "에필로그", "subtitle": "개인적인 해석", "created": "작성일",
-        "acknowledgments": "감사의 말", "foreword": "머리말"
+        "acknowledgments": "감사의 말"
     },
     "Russian": {
         "chapter": "Глава", "index": "Содержание", "preface": "Предисловие", "prologue": "Пролог",
         "epilogue": "Эпилог", "subtitle": "ЛИЧНАЯ ИНТЕРПРЕТАЦИЯ", "created": "Создано",
-        "acknowledgments": "Благодарности", "foreword": "Вступление"
+        "acknowledgments": "Благодарности"
     }
+}
+
+PUBLISHED_BY_LABELS = {
+    "english": "Published by",
+    "spanish": "Publicado por",
+    "french": "Publie par",
+    "german": "Veroeffentlicht von",
+    "italian": "Pubblicato da",
+    "portuguese": "Publicado por",
+    "japanese": "Hakkou moto",
+    "hindi": "Dwara Prakashit",
+    "chinese": "Chu ban",
+    "korean": "Balhaeng",
+    "russian": "Izdano"
 }
 
 def load_text_asset(filename):
@@ -162,7 +176,7 @@ def save_book_as_pdf(
         
         <!-- HALF TITLE -->
         <div class="page title-page">
-            <div class="half-title">Luminary Blueprint</div>
+            <div class="half-title">{{ published_by_label }} LUMINARY BLUEPRINT</div>
         </div>
         <div class="page blank-page frontmatter-blank"></div>
 
@@ -322,7 +336,8 @@ def save_book_as_pdf(
     css = CSS(string=font_config + main_css_string)
     base_url = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-    context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text}
+    published_by_label = PUBLISHED_BY_LABELS.get(language.strip().lower(), PUBLISHED_BY_LABELS["english"])
+    context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text, "published_by_label": published_by_label}
     
     print("PDF Engine: Pass 1")
     draft_html = html_template.render({**context, "page_map": None})
@@ -357,7 +372,7 @@ def save_book_as_pdf(
                     cumulative_shift += 1
     
     print("PDF Engine: Pass 2")
-    final_context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text}
+    final_context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text, "published_by_label": published_by_label}
     doc_2 = HTML(string=html_template.render({**final_context, "page_map": None}), base_url=base_url).render(stylesheets=[css])
 
     prologue_page_index_2 = 0
