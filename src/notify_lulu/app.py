@@ -44,21 +44,17 @@ def lambda_handler(event, context):
         clean_order_id = raw_order_id.replace("shpfy_", "")
 
         raw_ship_code = "STANDARD"
-        raw_ship_title = "STANDARD"
         if processed_books_results and len(processed_books_results) > 0:
             raw_ship_code = processed_books_results[0].get('shipping_code', 'STANDARD').upper()
-            raw_ship_title = processed_books_results[0].get('shipping_title', 'STANDARD').upper()
             
         lulu_shipping_level = "MAIL"
-        
-        ship_string = f"{raw_ship_code} {raw_ship_title}"
-        
-        if "EXPRESS" in ship_string or "PRIORITY" in ship_string:
+
+        if "EXPRESS" in raw_ship_code or "PRIORITY" in raw_ship_code:
             lulu_shipping_level = "EXPRESS" 
-        elif "GROUND" in ship_string:
+        elif "GROUND" in raw_ship_code:
             lulu_shipping_level = "GROUND"
 
-        print(f"Shipping Input: {ship_string} -> Lulu Level: {lulu_shipping_level}")
+        print(f"Shipping code: {raw_ship_code} -> Lulu Level: {lulu_shipping_level}")
 
         line_items = []
         for book_result in processed_books_results:

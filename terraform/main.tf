@@ -22,6 +22,12 @@ variable "unique_suffix" {
   default     = "luminary-prod-v1"
 }
 
+variable "factory_start_delay_hms" {
+  description = "Delay between webhook receipt and factory processing start in HH:MM:SS."
+  type        = string
+  default     = "00:00:00"
+}
+
 resource "aws_s3_bucket" "artifacts_bucket" {
   bucket = "astrology-artifacts-${var.unique_suffix}"
 }

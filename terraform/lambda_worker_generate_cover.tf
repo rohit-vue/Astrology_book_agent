@@ -35,14 +35,15 @@ resource "aws_iam_role_policy" "generate_cover_permissions" {
 
 resource "null_resource" "build_generate_cover_package" {
   triggers = {
-    app_py_hash    = filemd5("${path.module}/../src/generate_cover/app.py")
-    reqs_txt_hash  = filemd5("${path.module}/../src/generate_cover/requirements.txt")
-    font_file_hash = filemd5("${path.module}/../src/generate_cover/fonts/LibreBaskerville-Regular.ttf")
+    app_py_hash      = filemd5("${path.module}/../src/generate_cover/app.py")
+    reqs_txt_hash    = filemd5("${path.module}/../src/generate_cover/requirements.txt")
+    font_files_hash  = md5(join("", [for f in fileset("${path.module}/../src/generate_cover/fonts", "*") : filemd5("${path.module}/../src/generate_cover/fonts/${f}")]))
+    build_recipe_rev = "cjk-font-support-v1"
   }
 
   provisioner "local-exec" {
     command = <<-EOT
-      docker run --rm -v "${path.module}/../:/workspace" -w /workspace python:3.11-slim sh -c "rm -rf dist/generate_cover_build && apt-get update && apt-get install -y zip && mkdir -p dist/generate_cover_build && pip install -r src/generate_cover/requirements.txt -t dist/generate_cover_build && cp -r src/generate_cover/* dist/generate_cover_build/ && cd dist/generate_cover_build && zip -r ../generate_cover_package.zip ."
+      docker run --rm -v "${path.module}/../:/workspace" -w /workspace python:3.11-slim sh -c "rm -rf dist/generate_cover_build && apt-get update && apt-get install -y zip fonts-noto-cjk fonts-dejavu-core && mkdir -p dist/generate_cover_build && pip install -r src/generate_cover/requirements.txt -t dist/generate_cover_build && cp -r src/generate_cover/* dist/generate_cover_build/ && find /usr/share/fonts -name 'NotoSansCJK-Regular.ttc' -print -quit | xargs -r -I{} cp -f {} dist/generate_cover_build/fonts/ && find /usr/share/fonts -name 'DejaVuSans.ttf' -print -quit | xargs -r -I{} cp -f {} dist/generate_cover_build/fonts/ && cd dist/generate_cover_build && zip -r ../generate_cover_package.zip ."
     EOT
     interpreter = ["PowerShell", "-Command"]
   }

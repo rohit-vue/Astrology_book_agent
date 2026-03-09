@@ -60,6 +60,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
           "line_item_id.$":     "$$.Map.Item.Value.line_item_id",
           "cover_title.$":      "$$.Map.Item.Value.cover_title",
           "birth_data.$":       "$$.Map.Item.Value.birth_data",
+          "shipping_code.$":    "$$.Map.Item.Value.shipping_code",
           "focus.$":            "$$.Map.Item.Value.focus",
           "language.$":         "$$.Map.Item.Value.language",
           "requires_shipping.$": "$$.Map.Item.Value.requires_shipping"
@@ -119,6 +120,8 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
                 "order_id.$":           "$.Payload.order_id",
                 "line_item_id.$":       "$.Payload.line_item_id",
                 "cover_title.$":        "$.Payload.cover_title",
+                "birth_data.$":         "$.Payload.birth_data",
+                "shipping_code.$":      "$.Payload.shipping_code",
                 "shipping_address.$":   "$.Payload.shipping_address",
                 "customer_details.$":   "$.Payload.customer_details",
                 "requires_shipping.$":  "$.Payload.requires_shipping"

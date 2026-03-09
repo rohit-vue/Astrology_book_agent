@@ -26,10 +26,11 @@ resource "aws_lambda_function" "order_ingestion" {
 
   environment {
     variables = {
-      ORDERS_TABLE_NAME     = aws_dynamodb_table.orders_table.name
-      BOOK_ORDERS_QUEUE_URL = aws_sqs_queue.book_orders.id
-      RAW_PAYLOADS_BUCKET   = aws_s3_bucket.artifacts_bucket.id
-      API_KEYS_SECRET_ARN   = aws_secretsmanager_secret.api_keys_v2.arn
+      ORDERS_TABLE_NAME       = aws_dynamodb_table.orders_table.name
+      BOOK_ORDERS_QUEUE_URL   = aws_sqs_queue.book_orders.id
+      RAW_PAYLOADS_BUCKET     = aws_s3_bucket.artifacts_bucket.id
+      API_KEYS_SECRET_ARN     = aws_secretsmanager_secret.api_keys_v2.arn
+      FACTORY_START_DELAY_HMS = var.factory_start_delay_hms
     }
   }
 }

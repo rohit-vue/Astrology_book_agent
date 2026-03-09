@@ -1,9 +1,10 @@
-from weasyprint import HTML, CSS
+﻿from weasyprint import HTML, CSS
 from jinja2 import Template
 import os
 import pathlib
 import subprocess
 import json
+import re
 from datetime import datetime
 import openai 
 
@@ -102,6 +103,20 @@ def flatten_pdf_fonts(input_path, output_path):
     cmd = [ "gs", "-o", output_path, "-sDEVICE=pdfwrite", "-dNoOutputFonts", "-dCompatibilityLevel=1.4", input_path ]
     subprocess.run(cmd, check=True)
 
+def normalize_apostrophe_spacing(text):
+    if not isinstance(text, str):
+        return text
+
+    # Normalize common apostrophe-like characters to plain apostrophe.
+    text = re.sub(r"[\u2018\u2019\u02BC\uFF07`´]", "'", text)
+
+    # Remove regular and invisible spacing around apostrophes inside words.
+    return re.sub(
+        r"(?<=\w)[\s\u00A0\u2007\u202F\u200B\u2060\uFEFF]*'[\s\u00A0\u2007\u202F\u200B\u2060\uFEFF]*(?=\w)",
+        "'",
+        text,
+    )
+
 def save_book_as_pdf(
     title: str,
     book_data: dict,
@@ -152,6 +167,14 @@ def save_book_as_pdf(
         except Exception as e:
             print(f"Foreword translation failed, falling back to English. Error: {e}")
 
+    foreword_text = normalize_apostrophe_spacing(foreword_text)
+    for section_key in ("preface_text", "prologue_text", "epilogue_text"):
+        if section_key in book_data:
+            book_data[section_key] = normalize_apostrophe_spacing(book_data.get(section_key))
+    for chapter in book_data.get("chapters", []):
+        chapter["heading"] = normalize_apostrophe_spacing(chapter.get("heading"))
+        chapter["content"] = normalize_apostrophe_spacing(chapter.get("content"))
+
     ack_names = load_json_asset("acknowledgments.json")
 
     meta = book_data.get('metadata', {})
@@ -199,6 +222,7 @@ def save_book_as_pdf(
         <!-- FOREWORD (Loaded from file) -->
         <div class="page content-page" id="foreword">
             <h2 style="margin-bottom: 0.5em;">{{ labels.get('foreword', 'Foreword') }}</h2>
+            <p style="text-align: center; margin: 0 0 2em 0; font-style: italic; font-size: 11pt;">Olamide Shokunbi</p>
             <div class="content-block">
                 {% for p in foreword_text.split('\n') %}
                     {% if p.strip() %}<p>{{ p }}</p>{% endif %}

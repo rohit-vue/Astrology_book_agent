@@ -25,7 +25,7 @@ resource "aws_iam_role_policy" "start_execution_permissions" {
     Version = "2012-10-17",
     Statement = [
       {
-        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:SendMessage"],
         Effect   = "Allow",
         Resource = aws_sqs_queue.book_orders.arn
       },
@@ -55,7 +55,8 @@ resource "aws_lambda_function" "start_execution" {
 
   environment {
     variables = {
-      STATE_MACHINE_ARN = aws_sfn_state_machine.astrology_book_factory.arn
+      STATE_MACHINE_ARN     = aws_sfn_state_machine.astrology_book_factory.arn
+      BOOK_ORDERS_QUEUE_URL = aws_sqs_queue.book_orders.id
     }
   }
 }

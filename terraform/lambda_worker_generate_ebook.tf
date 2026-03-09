@@ -29,13 +29,15 @@ resource "aws_iam_role_policy" "generate_ebook_permissions" {
 
 resource "null_resource" "build_generate_ebook_package" {
   triggers = {
-    app_py_hash    = filemd5("${path.module}/../src/generate_ebook/app.py")
-    reqs_txt_hash  = filemd5("${path.module}/../src/generate_ebook/requirements.txt")
+    app_py_hash        = filemd5("${path.module}/../src/generate_ebook/app.py")
+    reqs_txt_hash      = filemd5("${path.module}/../src/generate_ebook/requirements.txt")
+    build_dir_present  = fileexists("${path.module}/../dist/generate_ebook_build/app.py") ? "present" : "missing"
+    package_zip_exists = fileexists("${path.module}/../dist/generate_ebook_package.zip") ? "present" : "missing"
   }
 
   provisioner "local-exec" {
-    command = <<-EOT
-      docker run --rm -v "${path.module}/../:/workspace" -w /workspace public.ecr.aws/sam/build-python3.11 bash -c "rm -rf dist/generate_ebook_build && pip install -r src/generate_ebook/requirements.txt -t dist/generate_ebook_build && cp -r src/generate_ebook/* dist/generate_ebook_build/ && cd dist/generate_ebook_build && zip -r ../generate_ebook_package.zip ."
+    command     = <<-EOT
+      docker run --rm -v "${path.module}/../:/workspace" -w /workspace public.ecr.aws/sam/build-python3.11 bash -c "rm -rf dist/generate_ebook_build && mkdir -p dist/generate_ebook_build && pip install -r src/generate_ebook/requirements.txt -t dist/generate_ebook_build && cp -r src/generate_ebook/* dist/generate_ebook_build/ && cd dist/generate_ebook_build && zip -r ../generate_ebook_package.zip ."
     EOT
     interpreter = ["PowerShell", "-Command"]
   }

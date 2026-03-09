@@ -122,11 +122,9 @@ def lambda_handler(event, context):
 
         shipping_lines = payload.get('shipping_lines', [])
         shipping_code = "STANDARD"
-        shipping_title = "Standard"
         
         if shipping_lines and len(shipping_lines) > 0:
             shipping_code = shipping_lines[0].get('code', 'STANDARD').upper()
-            shipping_title = shipping_lines[0].get('title', 'Standard').upper()
 
         for line_item in payload.get('line_items', []):
             line_item_id = str(line_item.get('id'))
@@ -170,8 +168,7 @@ def lambda_handler(event, context):
                 "language": language,
                 "requires_shipping": requires_shipping,
                 "birth_data": structured_birth_data,
-                "shipping_code": shipping_code,
-                "shipping_title": shipping_title
+                "shipping_code": shipping_code
             }
             books_for_workflow.append(book_details)
 
