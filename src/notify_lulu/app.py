@@ -69,12 +69,10 @@ def lambda_handler(event, context):
             year = bd.get('year', 2000)
             month = bd.get('month', 1)
             day = bd.get('day', 1)
-            hour = bd.get('hour', 0)
-            minute = bd.get('min', 0)
             
-            foil_title = f"{year}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}"
+            foil_title = f"{year}-{month:02d}-{day:02d}"
             
-            foil_author = "LUMINARY BLUEPRINT"
+            foil_author = "LUMINARY BLUEPRINT PUBLISHING"
 
             if pdf_s3 and cover_s3:
                 line_items.append({

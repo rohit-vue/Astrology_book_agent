@@ -30,6 +30,21 @@ resource "aws_iam_role_policy" "start_execution_permissions" {
         Resource = aws_sqs_queue.book_orders.arn
       },
       {
+        Action   = ["dynamodb:GetItem"],
+        Effect   = "Allow",
+        Resource = aws_dynamodb_table.orders_table.arn
+      },
+      {
+        Action   = ["s3:GetObject"],
+        Effect   = "Allow",
+        Resource = "${aws_s3_bucket.artifacts_bucket.arn}/raw-payloads/*"
+      },
+      {
+        Action   = "secretsmanager:GetSecretValue",
+        Effect   = "Allow",
+        Resource = aws_secretsmanager_secret.api_keys_v2.arn
+      },
+      {
         Action   = "states:StartExecution",
         Effect   = "Allow",
         Resource = aws_sfn_state_machine.astrology_book_factory.arn
@@ -49,20 +64,36 @@ resource "aws_lambda_function" "start_execution" {
   role          = aws_iam_role.start_execution_role.arn
   handler       = "app.lambda_handler"
   runtime       = "python3.11"
+  timeout       = 120
+  memory_size   = 128
+
+  ephemeral_storage {
+    size = 512
+  }
+
+  tracing_config {
+    mode = "PassThrough"
+  }
 
   filename         = data.archive_file.start_execution_zip.output_path
   source_code_hash = data.archive_file.start_execution_zip.output_base64sha256
+
+  layers = [
+    aws_lambda_layer_version.shared_libraries.arn
+  ]
 
   environment {
     variables = {
       STATE_MACHINE_ARN     = aws_sfn_state_machine.astrology_book_factory.arn
       BOOK_ORDERS_QUEUE_URL = aws_sqs_queue.book_orders.id
+      ORDERS_TABLE_NAME     = aws_dynamodb_table.orders_table.name
+      API_KEYS_SECRET_ARN   = aws_secretsmanager_secret.api_keys_v2.arn
     }
   }
 }
 
 resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   event_source_arn = aws_sqs_queue.book_orders.arn
-  function_name    = aws_lambda_function.start_execution.arn
+  function_name    = "${aws_lambda_function.start_execution.arn}:Live_Factory"
   batch_size       = 5 # Process up to 5 messages at a time
 }

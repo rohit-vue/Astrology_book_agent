@@ -83,8 +83,8 @@ def lambda_handler(event, context):
 
         comprehensive_data["CHARTS"]["VDASHA"] = {
             "Description": "Vedic Astro Details (Reliable Endpoint)",
-            "Endpoint": "astro_details",
-            "Data": call_astrology_api("astro_details", vedic_auth, main_payload)
+            "Endpoint": "current_vdasha",
+            "Data": call_astrology_api("current_vdasha", vedic_auth, main_payload)
         }
 
         comprehensive_data["CHARTS"]["CHARDASHA"] = {

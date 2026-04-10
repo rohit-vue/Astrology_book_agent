@@ -32,13 +32,15 @@ resource "aws_s3_bucket" "artifacts_bucket" {
   bucket = "astrology-artifacts-${var.unique_suffix}"
 }
 
+# Partition key must match src/order_ingestion/app.py and src/start_execution/app.py (job_id).
+# Changing hash_key replaces the table; migrate data if upgrading an existing deployment.
 resource "aws_dynamodb_table" "orders_table" {
-  name         = "${var.project_name}-Orders"
+  name         = "${var.project_name}-Jobs"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key = "order_id"
+  hash_key = "job_id"
 
   attribute {
-    name = "order_id"
+    name = "job_id"
     type = "S"
   }
 }

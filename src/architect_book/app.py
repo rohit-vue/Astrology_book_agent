@@ -12,7 +12,8 @@ API_KEYS_SECRET_ARN = os.environ.get('API_KEYS_SECRET_ARN')
 ARTIFACTS_BUCKET = os.environ.get('ARTIFACTS_BUCKET')
 openai_client = OpenAI(api_key="dummy") 
 
-MODEL_ID = "gpt-5.2"
+# Updated model ID
+MODEL_ID = "gpt-5.2-2025-12-11"
 
 def parse_s3_path(s3_path):
     parsed = urlparse(s3_path, allow_fragments=False)

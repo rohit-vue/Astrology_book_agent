@@ -12,7 +12,7 @@ openai_client = AsyncOpenAI(api_key="dummy")
 
 API_KEYS_SECRET_ARN = os.environ.get('API_KEYS_SECRET_ARN')
 ARTIFACTS_BUCKET = os.environ.get('ARTIFACTS_BUCKET')
-MODEL_TEXT = "gpt-5.2" 
+MODEL_TEXT = "gpt-5.2-2025-12-11" 
 MODEL_IMAGE = "dall-e-3"
 MODEL_STABLE = "gpt-4o"
 
@@ -148,7 +148,7 @@ async def async_lambda_handler(event, context):
         trans_prompt = f"Translate the following text into {language}. Maintain the poetic, warm, and serious tone. Do not add commentary.\n\nTEXT:\n{master_foreword}"
         try:
             trans_resp = await openai_client.chat.completions.create(
-                model="gpt-4o",
+                model=MODEL_STABLE,
                 messages=[{"role": "user", "content": trans_prompt}],
                 temperature=0.3
             )

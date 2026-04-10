@@ -4,14 +4,13 @@ import os
 import hmac
 import hashlib
 import base64
+from botocore.exceptions import ClientError
 from datetime import datetime, timedelta, timezone
-from openai import OpenAI
 
 sqs = boto3.client('sqs')
 dynamodb = boto3.resource('dynamodb')
 s3 = boto3.client('s3')
 secrets_manager = boto3.client('secretsmanager')
-openai_client = OpenAI(api_key="dummy") 
 
 ORDERS_TABLE_NAME = os.environ.get('ORDERS_TABLE_NAME')
 BOOK_ORDERS_QUEUE_URL = os.environ.get('BOOK_ORDERS_QUEUE_URL')
@@ -31,37 +30,27 @@ def parse_hms_delay(value: str) -> timedelta:
     return timedelta(hours=hours, minutes=minutes, seconds=seconds)
 
 def parse_iso_datetime(value: str) -> datetime:
-    dt = datetime.fromisoformat(value)
+    normalized = value.replace('Z', '+00:00') if isinstance(value, str) else value
+    dt = datetime.fromisoformat(normalized)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
 
-def build_data_extraction_prompt(date_time_str: str, location_str: str) -> str:
-    user_prompt = f"Time: {date_time_str}, Location: {location_str}"
-    return f"""
-    From the user's provided time and location, extract structured birth information.
-    Tasks:
-    1. Parse date (day, month, year).
-    2. Parse time (hour 0-23, minute).
-    3. Geocode location (lat, lon).
-    4. Determine UTC timezone offset (float).
+def build_job_id(headers, payload):
+    shop_domain = (
+        headers.get('x-shopify-shop-domain')
+        or payload.get('shop_domain')
+        or payload.get('domain')
+        or "unknown-shop.myshopify.com"
+    ).strip().lower()
+    webhook_id = (headers.get('x-shopify-webhook-id') or "").strip()
+    order_source_id = str(payload.get('id') or "")
 
-    USER PROMPT: "{user_prompt}"
-
-    Return JSON: "day", "month", "year", "hour", "min", "lat", "lon", "tzone".
-    """
-
-def parse_birth_data_with_ai(date_time_str, location_str):
-    print(f"Parsing with AI: date_time='{date_time_str}', location='{location_str}'")
-    prompt = build_data_extraction_prompt(date_time_str, location_str)
-    
-    response = openai_client.chat.completions.create(
-        model="gpt-4-1106-preview",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.0
-    )
-    return json.loads(response.choices[0].message.content)
+    if webhook_id:
+        return f"{shop_domain}:{webhook_id}"
+    if order_source_id:
+        return f"{shop_domain}:{order_source_id}"
+    return f"{shop_domain}:{int(datetime.now(timezone.utc).timestamp())}"
 
 def verify_shopify_webhook(data, hmac_header):
     if not SHOPIFY_WEBHOOK_SECRET: 
@@ -83,9 +72,8 @@ def lambda_handler(event, context):
         secret_payload = secrets_manager.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
         secrets = json.loads(secret_payload['SecretString'])
         SHOPIFY_WEBHOOK_SECRET = secrets.get('ShopifyWebhookSecret')
-        openai_client.api_key = secrets.get('OpenAIKey')
 
-    headers = {k.lower(): v for k, v in event['headers'].items()}
+    headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}
     hmac_header = headers.get('x-shopify-hmac-sha256')
     
     is_base64_encoded = event.get('isBase64Encoded', False)
@@ -97,7 +85,12 @@ def lambda_handler(event, context):
     
     payload_string = raw_body_bytes.decode('utf-8')
     payload = json.loads(payload_string)
-    order_id = f"shpfy_{payload['id']}"
+    order_source_id = payload.get('id')
+    if not order_source_id:
+        print("ERROR: Missing Shopify order id in payload.")
+        return {'statusCode': 400, 'body': 'Bad Request'}
+    order_id = f"shpfy_{order_source_id}"
+    job_id = build_job_id(headers, payload)
 
     webhook_created_at_raw = payload.get('created_at')
     try:
@@ -117,93 +110,48 @@ def lambda_handler(event, context):
     print(f"DEBUG SHIPPING LINES: {json.dumps(payload.get('shipping_lines', []))}")
     
     try:
-        books_for_workflow = []
-        print(f"Processing order {order_id}. Found {len(payload.get('line_items', []))} line items.")
-
-        shipping_lines = payload.get('shipping_lines', [])
-        shipping_code = "STANDARD"
-        
-        if shipping_lines and len(shipping_lines) > 0:
-            shipping_code = shipping_lines[0].get('code', 'STANDARD').upper()
-
-        for line_item in payload.get('line_items', []):
-            line_item_id = str(line_item.get('id'))
-            
-            if line_item.get('gift_card', False):
-                print(f"Skipping Gift Card: {line_item_id}")
-                continue
-
-            unstructured_props = {prop['name']: prop['value'] for prop in line_item.get('properties', [])}
-            print(f"DEBUG ITEM {line_item_id} PROPERTIES: {json.dumps(unstructured_props)}")
-
-            cover_title = unstructured_props.get("Name of the person") or unstructured_props.get("Name")
-            if not cover_title:
-                shipping = payload.get('shipping_address', {})
-                cover_title = f"{shipping.get('first_name','')} {shipping.get('last_name','')}".strip() or "Luminary"
-            
-            location_str = unstructured_props.get("Address") or unstructured_props.get("Birthplace")
-            date_time_str = unstructured_props.get("Delivery Date & Time") or unstructured_props.get("Birthdate and Birth Time")
-            
-            raw_variant_title = line_item.get('variant_title', '').strip()
-            
-            if not raw_variant_title or raw_variant_title.lower() == "default title":
-                focus = "Personality"
-            else:
-                focus = raw_variant_title
-            
-            print(f"Book Focus determined as: '{focus}'")
-            requires_shipping = line_item.get('requires_shipping', True)
-            language = unstructured_props.get("Language") or unstructured_props.get("Book Language", "English")
-
-            if not all([location_str, date_time_str]):
-                print(f"Skipping line item {line_item_id} - missing location/date.")
-                continue
-
-            structured_birth_data = parse_birth_data_with_ai(date_time_str, location_str)
-            
-            book_details = {
-                "line_item_id": line_item_id,
-                "cover_title": cover_title,
-                "focus": focus,
-                "language": language,
-                "requires_shipping": requires_shipping,
-                "birth_data": structured_birth_data,
-                "shipping_code": shipping_code
-            }
-            books_for_workflow.append(book_details)
-
-        if not books_for_workflow:
-            print("No valid books found in order.")
-            return {'statusCode': 200, 'body': 'No valid books found.'}
-
-        s3_key = f"raw-payloads/{order_id}.json"
+        received_at = datetime.now(timezone.utc)
+        s3_key = f"raw-payloads/{received_at:%Y/%m/%d}/{job_id}_{received_at.strftime('%H%M%S%f')}.json"
         s3.put_object(Bucket=RAW_PAYLOADS_BUCKET, Key=s3_key, Body=payload_string, ContentType='application/json')
 
-        clean_payload = {
-            "order_id": order_id,
-            "shopify_payload_s3_path": f"s3://{RAW_PAYLOADS_BUCKET}/{s3_key}",
-            "customer_details": payload.get('customer', {}),
-            "shipping_address": payload.get('shipping_address', {}),
-            "webhook_created_at": webhook_created_at.isoformat(),
-            "factory_start_delay_hms": FACTORY_START_DELAY_HMS,
-            "factory_start_at": factory_start_at.isoformat(),
-            "books": books_for_workflow
-        }
+        shop_domain = (
+            headers.get('x-shopify-shop-domain')
+            or payload.get('shop_domain')
+            or payload.get('domain')
+            or "unknown-shop.myshopify.com"
+        ).strip().lower()
+        webhook_event_id = headers.get('x-shopify-webhook-id')
         
         table = dynamodb.Table(ORDERS_TABLE_NAME)
-        table.put_item(Item={
-            'order_id': order_id, 
-            'created_at': datetime.now(timezone.utc).isoformat(), 
-            'status': 'received', 
-            'book_count': len(books_for_workflow), 
-            'customer_email': payload.get('customer', {}).get('email')
-        })
+        try:
+            table.put_item(
+                Item={
+                    'job_id': job_id,
+                    'order_id': order_id,
+                    'state': 'RECEIVED',
+                    'created_at': received_at.isoformat(),
+                    'shop_domain': shop_domain,
+                    'shopify_order_id': str(order_source_id),
+                    'shopify_webhook_id': webhook_event_id or "",
+                    'customer_email': payload.get('customer', {}).get('email'),
+                    'shopify_payload_s3_path': f"s3://{RAW_PAYLOADS_BUCKET}/{s3_key}",
+                    'webhook_created_at': webhook_created_at.isoformat(),
+                    'factory_start_delay_hms': FACTORY_START_DELAY_HMS,
+                    'factory_start_at': factory_start_at.isoformat()
+                },
+                ConditionExpression="attribute_not_exists(job_id)"
+            )
+        except ClientError as ddb_error:
+            if ddb_error.response.get('Error', {}).get('Code') == 'ConditionalCheckFailedException':
+                print(f"Duplicate webhook/job ignored for job_id={job_id}.")
+                return {'statusCode': 200, 'body': 'Duplicate already received'}
+            raise
 
-        now_utc = datetime.now(timezone.utc)
-        remaining_seconds = int((factory_start_at.astimezone(timezone.utc) - now_utc).total_seconds())
-        initial_delay = max(0, min(900, remaining_seconds))
-        print(f"Queueing order {order_id} with initial delay: {initial_delay}s (target start: {factory_start_at.isoformat()})")
-        sqs.send_message(QueueUrl=BOOK_ORDERS_QUEUE_URL, MessageBody=json.dumps(clean_payload), DelaySeconds=initial_delay)
+        sqs.send_message(
+            QueueUrl=BOOK_ORDERS_QUEUE_URL,
+            MessageBody=json.dumps({"job_id": job_id})
+        )
+        print(f"Persisted and queued job_id={job_id}, order_id={order_id}")
         return {'statusCode': 200, 'body': 'OK'}
         
     except Exception as e:
