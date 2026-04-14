@@ -1,4 +1,8 @@
-﻿from weasyprint import HTML, CSS
+﻿"""
+Local Docker PDF layout override: foreword + acknowledgments moved after epilogue.
+Mounted over generate_pdf/book_pdf_exporter.py in local_test/docker-compose.yml only.
+"""
+from weasyprint import HTML, CSS
 from jinja2 import Template
 import os
 import pathlib
@@ -12,57 +16,57 @@ LABELS = {
     "English": {
         "chapter": "Chapter", "index": "Contents", "preface": "Preface", "prologue": "Prologue",
         "epilogue": "Epilogue", "subtitle": "A PERSONAL INTERPRETATION", "created": "Created on",
-        "acknowledgments": "Acknowledgments", "foreword": "A Letter to the Reader"
+        "acknowledgments": "Acknowledgments"
     },
     "Spanish": {
         "chapter": "Capítulo", "index": "Índice", "preface": "Prefacio", "prologue": "Prólogo",
         "epilogue": "Epílogo", "subtitle": "UNA INTERPRETACIÓN PERSONAL", "created": "Creado el",
-        "acknowledgments": "Agradecimientos", "foreword": "Una carta al lector"
+        "acknowledgments": "Agradecimientos"
     },
     "French": {
         "chapter": "Chapitre", "index": "Sommaire", "preface": "Préface", "prologue": "Prologue",
         "epilogue": "Épilogue", "subtitle": "UNE INTERPRÉTATION PERSONNELLE", "created": "Créé le",
-        "acknowledgments": "Remerciements", "foreword": "Une lettre au lecteur"
+        "acknowledgments": "Remerciements"
     },
     "German": {
         "chapter": "Kapitel", "index": "Inhalt", "preface": "Vorwort", "prologue": "Prolog",
         "epilogue": "Epilog", "subtitle": "EINE PERSÖNLICHE INTERPRETATION", "created": "Erstellt am",
-        "acknowledgments": "Danksagung", "foreword": "Ein Brief an den Leser"
+        "acknowledgments": "Danksagung"
     },
     "Italian": {
         "chapter": "Capitolo", "index": "Indice", "preface": "Prefazione", "prologue": "Prologo",
         "epilogue": "Epilogo", "subtitle": "UN'INTERPRETAZIONE PERSONALE", "created": "Creato il",
-        "acknowledgments": "Ringraziamenti", "foreword": "Una lettera al lettore"
+        "acknowledgments": "Ringraziamenti"
     },
     "Portuguese": {
         "chapter": "Capítulo", "index": "Índice", "preface": "Prefácio", "prologue": "Prólogo",
         "epilogue": "Epílogo", "subtitle": "UMA INTERPRETAÇÃO PESSOAL", "created": "Criado em",
-        "acknowledgments": "Agradecimentos", "foreword": "Uma carta ao leitor"
+        "acknowledgments": "Agradecimentos"
     },
     "Japanese": {
         "chapter": "第", "index": "目次", "preface": "序文", "prologue": "プロローグ",
         "epilogue": "エピローグ", "subtitle": "個人的な解釈", "created": "作成日",
-        "acknowledgments": "謝辞", "foreword": "読者への手紙"
+        "acknowledgments": "謝辞"
     },
     "Hindi": {
         "chapter": "अध्याय", "index": "विषय सूची", "preface": "प्रस्तावना", "prologue": "उपसंहार",
         "epilogue": "उपसंहार", "subtitle": "एक व्यक्तिगत व्याख्या", "created": "को बनाया गया",
-        "acknowledgments": "आभार", "foreword": "पाठक के लिए एक पत्र"
+        "acknowledgments": "आभार"
     },
     "Chinese": {
         "chapter": "第", "index": "目录", "preface": "前言", "prologue": "序幕",
         "epilogue": "结语", "subtitle": "个人解读", "created": "创建于",
-        "acknowledgments": "致谢", "foreword": "致读者的一封信"
+        "acknowledgments": "致谢"
     },
     "Korean": {
         "chapter": "제", "index": "목차", "preface": "서문", "prologue": "프롤로그",
         "epilogue": "에필로그", "subtitle": "개인적인 해석", "created": "작성일",
-        "acknowledgments": "감사의 말", "foreword": "독자에게 보내는 편지"
+        "acknowledgments": "감사의 말"
     },
     "Russian": {
         "chapter": "Глава", "index": "Содержание", "preface": "Предисловие", "prologue": "Пролог",
         "epilogue": "Эпилог", "subtitle": "ЛИЧНАЯ ИНТЕРПРЕТАЦИЯ", "created": "Создано",
-        "acknowledgments": "Благодарности", "foreword": "Письмо читателю"
+        "acknowledgments": "Благодарности"
     }
 }
 
@@ -107,15 +111,28 @@ def normalize_apostrophe_spacing(text):
     if not isinstance(text, str):
         return text
 
+    # --- Quotation marks: trim space touching quotes, then collapse doubled horizontal space ---
+    # Horizontal only (no \n) so \n\n paragraph breaks stay intact.
+    _h = r"[ \t\u00A0\u1680\u2000-\u200A\u2007\u202F\u205F\u3000]"
+    _qo = "[\u201c\"]"
+    _qc = "[\u201d\"]"
+    # Inside the pair: no gap between quote and word.
+    text = re.sub("(" + _qo + r")" + _h + r"+(?=\S)", r"\1", text)
+    text = re.sub(r"(?<=\S)" + _h + r"+(" + _qc + r")", r"\1", text)
+    # Any 2+ horizontal spaces → one space (fixes as␠␠“honesty and ”,␠␠and — the latter
+    # was missed when we only matched spaces directly after ”, not after comma).
+    text = re.sub(_h + r"{2,}", " ", text)
+
     # Normalize common apostrophe-like characters to plain apostrophe.
     text = re.sub(r"[\u2018\u2019\u02BC\uFF07`´]", "'", text)
 
     # Remove regular and invisible spacing around apostrophes inside words.
-    return re.sub(
+    text = re.sub(
         r"(?<=\w)[\s\u00A0\u2007\u202F\u200B\u2060\uFEFF]*'[\s\u00A0\u2007\u202F\u200B\u2060\uFEFF]*(?=\w)",
         "'",
         text,
     )
+    return text
 
 def save_book_as_pdf(
     title: str,
@@ -125,6 +142,10 @@ def save_book_as_pdf(
     language: str = "English",
     openai_api_key: str = None
 ) -> tuple[str, int]:
+    print(
+        "[local PDF layout] Foreword + acknowledgments render after epilogue "
+        "(blank, letter, blank, acknowledgments)."
+    )
     output_path = os.path.join(output_dir, filename)
 
     lang_key = language.title() 
@@ -151,21 +172,8 @@ def save_book_as_pdf(
     footer_date = footer_text
     print(f"[DEBUG] FINAL FOOTER SENT TO PDF:\n{footer_text}")
 
+    # Local rule: foreword stays in English for every book language.
     foreword_text = load_text_asset("foreword.txt")
-    if language.lower() != "english" and openai_api_key:
-        print(f"Translating Foreword to {language}...")
-        try:
-            client = openai.OpenAI(api_key=openai_api_key)
-            trans_prompt = f"Translate the following text into {language}. Maintain the poetic, warm, and serious tone. Do not add commentary.\n\nTEXT:\n{foreword_text}"
-            trans_resp = client.chat.completions.create(
-                model="gpt-5.2-2025-12-11",
-                messages=[{"role": "user", "content": trans_prompt}],
-                temperature=0.3
-            )
-            foreword_text = trans_resp.choices[0].message.content.strip()
-            print("Translation successful.")
-        except Exception as e:
-            print(f"Foreword translation failed, falling back to English. Error: {e}")
 
     foreword_text = normalize_apostrophe_spacing(foreword_text)
     for section_key in ("preface_text", "prologue_text", "epilogue_text"):
@@ -218,18 +226,6 @@ def save_book_as_pdf(
             <div class="half-title">{{ dedication_title }}</div>
         </div>
         <div class="page blank-page frontmatter-blank"></div>
-        
-        <!-- FOREWORD (Loaded from file) -->
-        <div class="page content-page" id="foreword">
-            <h2 style="margin-bottom: 0.5em;">{{ labels.get('foreword', 'A Letter to the Reader') }}</h2>
-            <p style="text-align: center; margin: 0 0 2em 0; font-style: italic; font-size: 11pt;">Olamide Shokunbi</p>
-            <div class="content-block">
-                {% for p in foreword_text.split('\n') %}
-                    {% if p.strip() %}<p>{{ p }}</p>{% endif %}
-                {% endfor %}
-            </div>
-        </div>
-        <div class="page blank-page frontmatter-blank"></div>
 
         {% if preface_text %}
         <div class="page content-page" id="preface">
@@ -238,17 +234,6 @@ def save_book_as_pdf(
         </div>
         <div class="page blank-page frontmatter-blank"></div>
         {% endif %}
-        
-        <!-- ACKNOWLEDGMENTS (Loaded from file) -->
-        <div class="page toc-page">
-            <h1>{{ labels.acknowledgments }}</h1>
-            <div class="ack-grid">
-                {% for name in ack_names %}
-                    <div class="ack-item">{{ name }}</div>
-                {% endfor %}
-            </div>
-        </div>
-        <div class="page blank-page frontmatter-blank"></div>
 
         <!-- TOC -->
         <div class="page toc-page">
@@ -308,6 +293,30 @@ def save_book_as_pdf(
                 <div class="content-block">{% for p in epilogue_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
             </div>
         {% endif %}
+
+        <!-- End matter (local layout): blank, Letter to the Reader, blank, Acknowledgments -->
+        <div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>
+
+        <div class="page content-page" id="foreword">
+            <h2 style="margin-bottom: 0.5em;">A Letter to the Reader</h2>
+            <div class="content-block">
+                {% for p in foreword_text.split('\n') %}
+                    {% if p.strip() %}<p>{{ p }}</p>{% endif %}
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>
+
+        <div class="page toc-page" id="acknowledgments">
+            <h1 style="text-transform: uppercase;">{{ labels.acknowledgments }}</h1>
+            <div class="ack-grid">
+                {% for name in ack_names %}
+                    <div class="ack-item">{{ name }}</div>
+                {% endfor %}
+            </div>
+        </div>
+        <div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>
     </body>
     </html>
     """)
@@ -315,19 +324,20 @@ def save_book_as_pdf(
     lambda_root = os.environ.get('LAMBDA_TASK_ROOT', '/var/task')
     fonts_dir = os.path.join(lambda_root, 'fonts')
     if not os.path.exists(fonts_dir): fonts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'fonts'))
-    baskerville_regular_uri = pathlib.Path(os.path.join(fonts_dir, 'LibreBaskerville-Regular.ttf')).as_uri()
-    baskerville_italic_uri = pathlib.Path(os.path.join(fonts_dir, 'LibreBaskerville-Italic.ttf')).as_uri()
-    baskerville_bold_uri = pathlib.Path(os.path.join(fonts_dir, 'LibreBaskerville-Bold.ttf')).as_uri()
-    font_config = f"""@font-face{{font-family:'Baskerville';src:url('{baskerville_regular_uri}');}}@font-face{{font-family:'Baskerville';font-style:italic;src:url('{baskerville_italic_uri}');}}@font-face{{font-family:'Baskerville';font-weight:bold;src:url('{baskerville_bold_uri}');}}"""
+    noto_serif_regular_uri = pathlib.Path(os.path.join(fonts_dir, 'NotoSerif-Regular.ttf')).as_uri()
+    noto_serif_italic_uri = pathlib.Path(os.path.join(fonts_dir, 'NotoSerif-Italic.ttf')).as_uri()
+    noto_serif_bold_uri = pathlib.Path(os.path.join(fonts_dir, 'NotoSerif-Bold.ttf')).as_uri()
+    font_config = f"""@font-face{{font-family:'NotoSerif';src:url('{noto_serif_regular_uri}');}}@font-face{{font-family:'NotoSerif';font-style:italic;src:url('{noto_serif_italic_uri}');}}@font-face{{font-family:'NotoSerif';font-weight:bold;src:url('{noto_serif_bold_uri}');}}"""
 
     main_css_string = """
     @page { size: 139.7mm 215.9mm; margin: 20mm; @bottom-center { content: none; } }
-    @page numbered { counter-increment: page-num; @bottom-center { content: counter(page-num); font-family: 'Baskerville', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 9pt; } }
-    @page numbered :blank { @bottom-center { content: counter(page-num); font-family: 'Baskerville', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 9pt; } }
+    @page numbered { counter-increment: page-num; @bottom-center { content: counter(page-num); font-family: 'NotoSerif', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 9pt; } }
+    @page numbered :blank { @bottom-center { content: counter(page-num); font-family: 'NotoSerif', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 9pt; } }
     @page frontmatter { @bottom-center { content: none; } }
-    body { font-family: 'Baskerville', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 8pt; line-height: 1.6; }
-    .title-page, .print-date-page, .toc-page, .frontmatter-blank, #preface, #foreword { page: frontmatter; }
-    #prologue, #epilogue, .chapter-title-page, .image-page, .content-page, .numbered-blank { page: numbered; }
+    body { font-family: 'NotoSerif', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 8pt; line-height: 1.6; }
+    .title-page, .print-date-page, .toc-page, .frontmatter-blank, #preface { page: frontmatter; }
+    #acknowledgments { page: numbered; }
+    #prologue, #epilogue, #foreword, .chapter-title-page, .image-page, .content-page, .numbered-blank { page: numbered; }
     #prologue { counter-reset: page-num 0; }
     .page, .title-page, .print-date-page, .toc-page, .chapter-title-page, .image-page, .blank-page { page-break-after: always; position: relative; height: 100%; }
     .image-page { margin: 0; } .image-container img { max-width: 100%; max-height: 100%; object-fit: cover; }

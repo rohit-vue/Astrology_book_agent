@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""
+Local end-to-end book generation pipeline.
+Replicates the full production Lambda pipeline locally:
+  1. Fetch astrology data (astrologyapi.com)
+  2. Architect book structure (OpenAI)
+  3. Write chapters + generate images (OpenAI + gpt-image-1-mini)
+  4. Generate PDF (book_pdf_exporter.py)
+
+Usage:
+  docker compose run --rm pipeline              # full pipeline (APIs + PDF)
+  docker compose run --rm pdf-from-artifacts    # PDF only from output/artifacts (no API calls)
+"""
+import sys
+import os
+import json
+import asyncio
+import time
+from datetime import datetime
+
+import base64
+import requests
+import httpx
+from dotenv import load_dotenv
+from openai import OpenAI, AsyncOpenAI
+
+sys.path.insert(0, "/app/generate_pdf")
+from book_pdf_exporter import save_book_as_pdf
+
+load_dotenv("/app/.env")
+
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
+ASTRO_WESTERN_UID = os.environ["ASTROLOGY_WESTERN_USER_ID"]
+ASTRO_WESTERN_KEY = os.environ["ASTROLOGY_WESTERN_API_KEY"]
+ASTRO_VEDIC_UID = os.environ["ASTROLOGY_VEDIC_USER_ID"]
+ASTRO_VEDIC_KEY = os.environ["ASTROLOGY_VEDIC_API_KEY"]
+
+MODEL_TEXT = "gpt-5.2-2025-12-11"
+MODEL_IMAGE = "gpt-image-1-mini"
+MODEL_STABLE = "gpt-4o"
+
+OUTPUT_DIR = "/app/output"
+ARTIFACTS_DIR = os.path.join(OUTPUT_DIR, "artifacts")
+IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
+
+# ---------------------------------------------------------------------------
+# SSM prompts (hardcoded from Terraform)
+# ---------------------------------------------------------------------------
+
+ARCHITECT_SYSTEM_PROMPT = """You are an ASI (Artificial Superintelligence) acting as a master psychological interpreter and book architect.
+Your persona is wise, insightful, and empathetic.
+**CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**."""
+
+ARCHITECT_USER_PROMPT = """**CRITICAL LANGUAGE REQUIREMENT:**
+The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
+
+**TASK:**
+Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
+
+**STRUCTURE RULES:**
+You must generate a book outline with EXACTLY 7 CHAPTERS.
+Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
+
+**TECHNICAL MANDATE: JSON OUTPUT**
+Your entire response MUST be a single, valid JSON object.
+{
+  "metadata": {
+    "title": "Book Title (in __LANGUAGE__)",
+    "subtitle": "Subtitle (in __LANGUAGE__)",
+    "footer_text": "Footer in __LANGUAGE__",
+    "preface_title": "Preface Title in __LANGUAGE__",
+    "prologue_title": "Prologue Title in __LANGUAGE__",
+    "epilogue_title": "Epilogue Title in __LANGUAGE__",
+    "dedication_title": "Career by Design or similar (in __LANGUAGE__)"
+  },
+  "ui_labels": {
+    "toc_title": "Contents (in __LANGUAGE__)",
+    "chapter_prefix": "Chapter (in __LANGUAGE__)"
+  },
+  "structure": {
+    "preface_description": "...",
+    "prologue_description": "...",
+    "epilogue_description": "...",
+    "chapters": [
+      { "title": "Chapter Title (in __LANGUAGE__)", "description": "A detailed summary (in __LANGUAGE__)." }
+    ]
+  }
+}
+
+**Comprehensive Astrological Data:**
+__ASTROLOGY_DATA__"""
+
+IMAGE_PROMPT_TEMPLATE = "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
+
+
+# ===========================================================================
+# STEP 1: Fetch Astrology Data
+# ===========================================================================
+
+def call_astrology_api(endpoint, auth, payload):
+    url = f"https://json.astrologyapi.com/v1/{endpoint}"
+    print(f"  Calling {endpoint}...")
+    try:
+        resp = requests.post(url, auth=auth, json=payload, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"  Error on {endpoint}: {e}")
+        return None
+
+
+def fetch_astrology(birth_data, order_id):
+    print("\n" + "=" * 60)
+    print("STEP 1: Fetching Astrology Data")
+    print("=" * 60)
+
+    western_auth = (ASTRO_WESTERN_UID, ASTRO_WESTERN_KEY)
+    vedic_auth = (ASTRO_VEDIC_UID, ASTRO_VEDIC_KEY)
+
+    today = datetime.now()
+    sr_payload = {**birth_data, "sr_year": today.year}
+    transit_payload = {**birth_data, "trans_date": today.strftime("%d-%m-%Y")}
+
+    charts = {
+        "AYANAMSHA": ("ayanamsha", vedic_auth, birth_data),
+        "PLANETS_EXTENDED": ("planets/extended", western_auth, birth_data),
+        "BHAV_MADHYA": ("astro_details", vedic_auth, birth_data),
+        "WESTERN_HOROSCOPE": ("western_horoscope", western_auth, birth_data),
+        "VDASHA": ("current_vdasha", vedic_auth, birth_data),
+        "CHARDASHA": ("current_chardasha", vedic_auth, birth_data),
+        "SOLAR_RETURN_HOUSES": ("solar_return_house_cusps", western_auth, sr_payload),
+        "SOLAR_RETURN_PLANETS": ("solar_return_planets", western_auth, sr_payload),
+        "SOLAR_RETURN_ASPECTS": ("solar_return_planet_aspects", western_auth, sr_payload),
+        "TRANSITS": ("tropical_transits/daily", western_auth, transit_payload),
+    }
+
+    comprehensive_data = {
+        "META": {
+            "Order_ID": order_id,
+            "Request_Date": today.isoformat(),
+            "Input_Parameters": birth_data,
+        },
+        "CHARTS": {},
+    }
+
+    for key, (endpoint, auth, payload) in charts.items():
+        comprehensive_data["CHARTS"][key] = {
+            "Description": key,
+            "Endpoint": endpoint,
+            "Data": call_astrology_api(endpoint, auth, payload),
+        }
+
+    out_path = os.path.join(ARTIFACTS_DIR, "astrology_data.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(comprehensive_data, f, indent=2, ensure_ascii=False)
+
+    print(f"  Saved -> {out_path}")
+    return comprehensive_data
+
+
+# ===========================================================================
+# STEP 2: Architect Book Structure
+# ===========================================================================
+
+def architect_book(astrology_data, focus, language):
+    print("\n" + "=" * 60)
+    print("STEP 2: Architecting Book Structure")
+    print("=" * 60)
+
+    system_prompt = ARCHITECT_SYSTEM_PROMPT.replace("__LANGUAGE__", language)
+    user_prompt = (
+        ARCHITECT_USER_PROMPT
+        .replace("__FOCUS__", focus)
+        .replace("__LANGUAGE__", language)
+        .replace("__ASTROLOGY_DATA__", json.dumps(astrology_data, indent=2))
+    )
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    print("  Calling OpenAI to architect book structure...")
+    resp = client.chat.completions.create(
+        model=MODEL_TEXT,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+    )
+
+    structure = json.loads(resp.choices[0].message.content)
+    chapters = structure.get("structure", {}).get("chapters", [])
+    print(f"  Generated structure with {len(chapters)} chapters.")
+
+    out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(structure, f, indent=2, ensure_ascii=False)
+
+    print(f"  Saved -> {out_path}")
+    return structure
+
+
+# ===========================================================================
+# STEP 3: Write Chapters + Images
+# ===========================================================================
+
+async def generate_section(client, name, description, style, language):
+    if not description:
+        return ""
+    print(f"  Generating {name}...")
+    prompt = f"""
+    Write the {name} for a personal astrology book.
+    Language: {language}
+    Style: {style}
+    Context: {description}
+    Directive: Write in second person ("You"). Start directly. Plain text only.
+    """
+    try:
+        resp = await client.chat.completions.create(
+            model=MODEL_STABLE,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=800,
+        )
+        text = resp.choices[0].message.content.strip()
+        print(f"  {name} done: {len(text)} chars")
+        return text
+    except Exception as e:
+        print(f"  Error generating {name}: {e}")
+        return ""
+
+
+async def write_single_chapter(client, idx, details, chart, target, focus, style, language):
+    title = details["title"]
+    print(f"  Starting Chapter {idx}: {title}")
+
+    prompt = f"""
+    Write Chapter {idx}: "{title}".
+    **Language:** {language}
+    **Style:** {style}
+    **Focus:** {focus}
+    **Summary:** {details['description']}
+    **Word Target:** {target}
+    **Formatting:** Plain paragraphs. No bold. No headers.
+    **Data:** {json.dumps(chart)}
+    """
+    text_resp = await client.chat.completions.create(
+        model=MODEL_TEXT,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5,
+    )
+    text = text_resp.choices[0].message.content.strip()
+
+    img_path = None
+    try:
+        sum_resp = await client.chat.completions.create(
+            model=MODEL_TEXT,
+            messages=[{"role": "user", "content": f"Summarize text for image: {text[:1000]}"}],
+            max_completion_tokens=100,
+        )
+        summary = sum_resp.choices[0].message.content.strip()
+        img_prompt = IMAGE_PROMPT_TEMPLATE.replace("__CHAPTER_TITLE__", title).replace("__SUMMARY__", summary)
+        img_resp = await client.images.generate(
+            model=MODEL_IMAGE,
+            prompt=img_prompt,
+            n=1,
+            size="1024x1536",
+            quality="medium",
+            background="opaque",
+        )
+        img_item = img_resp.data[0]
+        img_path = os.path.join(IMAGES_DIR, f"chapter_{idx}.png")
+        if getattr(img_item, "b64_json", None):
+            raw = base64.b64decode(img_item.b64_json)
+            with open(img_path, "wb") as f:
+                f.write(raw)
+        elif getattr(img_item, "url", None):
+            async with httpx.AsyncClient() as http:
+                dl = await http.get(img_item.url)
+                dl.raise_for_status()
+                with open(img_path, "wb") as f:
+                    f.write(dl.content)
+        else:
+            raise RuntimeError("Image response has neither b64_json nor url")
+        print(f"  Chapter {idx} image saved -> {img_path}")
+    except Exception as e:
+        print(f"  Chapter {idx} image generation failed: {e}")
+
+    chapter_json = {"chapter_title": title, "chapter_text": text}
+    ch_path = os.path.join(ARTIFACTS_DIR, f"chapter_{idx}.json")
+    with open(ch_path, "w", encoding="utf-8") as f:
+        json.dump(chapter_json, f, indent=2, ensure_ascii=False)
+
+    print(f"  Chapter {idx} text saved -> {ch_path}")
+    return {
+        "chapter_index": idx,
+        "chapter_title": title,
+        "chapter_text": text,
+        "image_path": img_path,
+    }
+
+
+async def write_chapters(astrology_data, structure, focus, language):
+    print("\n" + "=" * 60)
+    print("STEP 3: Writing Chapters + Generating Images")
+    print("=" * 60)
+
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+    # Style analysis
+    try:
+        style_resp = await client.chat.completions.create(
+            model=MODEL_TEXT,
+            messages=[{"role": "user", "content": f"Describe the ideal writing tone for a book about {focus} in {language} based on this chart."}],
+            max_completion_tokens=100,
+        )
+        style = style_resp.choices[0].message.content.strip()
+    except Exception:
+        style = "Warm"
+    print(f"  Style: {style[:80]}...")
+
+    # Resolve descriptions from structure
+    struct_inner = structure.get("structure", {})
+
+    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or \
+        "Write a warm, welcoming preface setting the stage for a journey of self-discovery based on the user's astrology."
+    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or \
+        "Write an introduction that explains the core themes of the book and invites the reader to explore their inner world."
+    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or \
+        "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
+
+    # Foreword (from file, same as prod)
+    foreword_path = os.path.join(os.environ.get("LAMBDA_TASK_ROOT", "/app/generate_pdf"), "assets", "foreword.txt")
+    try:
+        with open(foreword_path, "r", encoding="utf-8") as f:
+            foreword_text = f.read().strip()
+    except FileNotFoundError:
+        foreword_text = "Welcome to your Blueprint."
+
+    if language.lower() != "english":
+        print(f"  Translating foreword to {language}...")
+        try:
+            trans_resp = await client.chat.completions.create(
+                model=MODEL_STABLE,
+                messages=[{"role": "user", "content": f"Translate the following text into {language}. Maintain the poetic, warm, and serious tone. Do not add commentary.\n\nTEXT:\n{foreword_text}"}],
+                temperature=0.3,
+            )
+            foreword_text = trans_resp.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"  Foreword translation failed: {e}")
+
+    # Generate preface + prologue
+    preface_text = await generate_section(client, "Preface", preface_desc, style, language)
+    prologue_text = await generate_section(client, "Prologue", prologue_desc, style, language)
+
+    # Write all chapters in parallel
+    chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
+    word_target = 10000
+
+    tasks = [
+        write_single_chapter(client, idx + 1, ch, astrology_data, word_target, focus, style, language)
+        for idx, ch in enumerate(chapters_list)
+    ]
+    results = await asyncio.gather(*tasks)
+    chapters_data = sorted([r for r in results if r is not None], key=lambda x: x["chapter_index"])
+
+    if not chapters_data:
+        raise ValueError("All chapter writing tasks failed.")
+
+    # Generate epilogue
+    epilogue_text = await generate_section(client, "Epilogue", epilogue_desc, style, language)
+
+    metadata = structure.get("metadata", struct_inner.get("metadata", {}))
+
+    return {
+        "metadata": metadata,
+        "preface_text": preface_text,
+        "prologue_text": prologue_text,
+        "epilogue_text": epilogue_text,
+        "foreword_text": foreword_text,
+        "chapters_data": chapters_data,
+    }
+
+
+# ===========================================================================
+# STEP 4: Generate PDF
+# ===========================================================================
+
+def generate_pdf(write_result, birth_data, language):
+    print("\n" + "=" * 60)
+    print("STEP 4: Generating PDF")
+    print("=" * 60)
+
+    metadata = write_result["metadata"]
+    title = metadata.get("title", "The Architecture of You")
+
+    book_data = {
+        "metadata": metadata,
+        "birth_data": birth_data,
+        "preface_text": write_result["preface_text"],
+        "prologue_text": write_result["prologue_text"],
+        "epilogue_text": write_result["epilogue_text"],
+        "chapters": [],
+    }
+
+    for ch in write_result["chapters_data"]:
+        book_data["chapters"].append({
+            "heading": ch["chapter_title"],
+            "content": ch["chapter_text"],
+            "image_path": ch.get("image_path"),
+        })
+
+    timestamp = int(time.time())
+    filename = f"book_{timestamp}.pdf"
+
+    print(f"  Rendering PDF: {filename}")
+    output_path, page_count = save_book_as_pdf(
+        title=title,
+        book_data=book_data,
+        filename=filename,
+        output_dir=OUTPUT_DIR,
+        language=language,
+        openai_api_key=None,
+    )
+
+    print(f"  PDF written -> {output_path}")
+    print(f"  Page count:  {page_count}")
+    return output_path, page_count
+
+
+# ===========================================================================
+# Main
+# ===========================================================================
+
+def main():
+    config_path = "/app/pipeline_config.json"
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    birth_data = config["birth_data"]
+    order_id = config.get("order_id", "LOCAL_TEST")
+    focus = config.get("focus", "Personality")
+    language = config.get("language", "English")
+
+    os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+    os.makedirs(IMAGES_DIR, exist_ok=True)
+
+    print(f"Pipeline started at {datetime.now().isoformat()}")
+    print(f"  Focus:    {focus}")
+    print(f"  Language: {language}")
+    print(f"  Birth:    {json.dumps(birth_data)}")
+    start = time.time()
+
+    astrology_data = fetch_astrology(birth_data, order_id)
+    structure = architect_book(astrology_data, focus, language)
+    write_result = asyncio.run(write_chapters(astrology_data, structure, focus, language))
+
+    sections_path = os.path.join(ARTIFACTS_DIR, "generated_sections.json")
+    with open(sections_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "preface_text": write_result["preface_text"],
+                "prologue_text": write_result["prologue_text"],
+                "epilogue_text": write_result["epilogue_text"],
+            },
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+    print(f"  Saved -> {sections_path}")
+
+    pdf_path, page_count = generate_pdf(write_result, birth_data, language)
+
+    elapsed = time.time() - start
+    print("\n" + "=" * 60)
+    print("PIPELINE COMPLETE")
+    print("=" * 60)
+    print(f"  PDF:        {pdf_path}")
+    print(f"  Pages:      {page_count}")
+    print(f"  Elapsed:    {elapsed:.1f}s")
+    print(f"  Artifacts:  {ARTIFACTS_DIR}")
+    print(f"  Images:     {IMAGES_DIR}")
+
+
+if __name__ == "__main__":
+    main()

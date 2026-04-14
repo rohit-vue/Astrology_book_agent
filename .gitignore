@@ -18,6 +18,8 @@ lambda_package/
 # Generated Content 
 generated_books/
 generated_images/
+local_test/output/
+local_test/.env
 
 
 # Terraform State & Cache

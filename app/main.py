@@ -19,7 +19,7 @@ from datetime import datetime
 load_dotenv()
 
 openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_TEXT = "gpt-4-1106-preview"
+MODEL_TEXT = "gpt-5.2-2025-12-11"
 
 app = FastAPI(
     title="Personal Portrait Generator",
@@ -105,18 +105,42 @@ async def generate_book(request: BookRequest):
         )
         print("Book components generated successfully.")
 
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        books_dir = os.path.join(repo_root, "generated_books")
+        os.makedirs(books_dir, exist_ok=True)
+
+        # Align with src/generate_pdf/book_pdf_exporter: same assets/fonts via LAMBDA_TASK_ROOT,
+        # birth_data shape uses "min" for footer; extract_birth_data uses "minute".
+        pdf_book_data = {
+            **book_data,
+            "birth_data": {
+                **birth_data,
+                "min": birth_data.get("minute", birth_data.get("min", 0)),
+            },
+            "metadata": {
+                "title": book_title,
+                "dedication_title": "Career by Design",
+            },
+        }
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{sanitize_filename(book_title)}_{timestamp}.pdf"
         print(f"Generating unique PDF: {filename}...")
-        
-        output_pdf_path = await run_in_threadpool(
-            save_book_as_pdf,
-            title=book_title,
-            book_data=book_data,
-            filename=filename
-        )
+
+        def _save_pdf():
+            os.environ["LAMBDA_TASK_ROOT"] = os.path.join(repo_root, "src", "generate_pdf")
+            return save_book_as_pdf(
+                title=book_title,
+                book_data=pdf_book_data,
+                filename=filename,
+                output_dir=books_dir,
+                language="English",
+                openai_api_key=os.getenv("OPENAI_API_KEY"),
+            )
+
+        output_pdf_path, page_count = await run_in_threadpool(_save_pdf)
         print("\n--- SUCCESS ---")
-        print(f"Personalized book saved to: {output_pdf_path}")
+        print(f"Personalized book saved to: {output_pdf_path} ({page_count} pages)")
         
         pdf_url = f"/generated_books/{filename}"
 
