@@ -134,6 +134,19 @@ def normalize_apostrophe_spacing(text):
     )
     return text
 
+
+def _folio_start_page_index(doc, book_data) -> int:
+    """Index of the first PDF page where body folio numbering begins (folio 1)."""
+    if book_data.get("prologue_text"):
+        for i, page in enumerate(doc.pages):
+            if "prologue" in page.anchors:
+                return i
+    for i, page in enumerate(doc.pages):
+        if "chapter-1" in page.anchors:
+            return i
+    return 0
+
+
 def save_book_as_pdf(
     title: str,
     book_data: dict,
@@ -192,17 +205,14 @@ def save_book_as_pdf(
     if book_data.get('prologue_text'): toc_base.append({"title": L['prologue'], "href": "#prologue"})
     for i, ch in enumerate(book_data.get("chapters", [])):
         toc_base.append({"title": ch["heading"], "href": f"#chapter-{i+1}"})
-        ch['force_blank_before_image'] = False
-        ch['force_blank_before_title'] = False
     if book_data.get('epilogue_text'): toc_base.append({"title": L['epilogue'], "href": "#epilogue"})
-    
-    book_data['force_blank_before_epilogue'] = False
 
     html_template = Template("""
     <!DOCTYPE html>
     <html lang="{{ lang }}">
     <head><meta charset="UTF-8"><title>{{ book_title }}</title></head>
     <body>
+        <div class="page blank-page frontmatter-blank"></div>
         <div class="page blank-page frontmatter-blank"></div>
         
         <!-- HALF TITLE -->
@@ -212,111 +222,132 @@ def save_book_as_pdf(
         <div class="page blank-page frontmatter-blank"></div>
 
         <!-- FULL TITLE -->
-        <div class="page title-page">
-            <div class="title-main-block">
-                <div class="title-decoration">✧</div>
-                <h1 class="book-title">{{ book_title }}</h1>
-                <div class="title-decoration">✦</div>
+        <div class="fm-break fm-break-recto">
+            <div class="page title-page">
+                <div class="title-main-block">
+                    <div class="title-decoration">✧</div>
+                    <h1 class="book-title">{{ book_title }}</h1>
+                    <div class="title-decoration">✦</div>
+                </div>
             </div>
         </div>
-        <div class="page print-date-page">
-            <div style="white-space: pre-wrap; text-align: center; line-height: 2.0;">{{ footer_date }}</div>
+
+        <!-- PRINT DATE -->
+        <div class="fm-break fm-break-verso">
+            <div class="page print-date-page">
+                <div style="white-space: pre-wrap; text-align: center; line-height: 2.0;">{{ footer_date }}</div>
+            </div>
         </div>
-        <div class="page title-page">
-            <div class="half-title">{{ dedication_title }}</div>
+
+        <!-- DEDICATION -->
+        <div class="fm-break fm-break-recto">
+            <div class="page title-page">
+                <div class="half-title">{{ dedication_title }}</div>
+            </div>
         </div>
+
         <div class="page blank-page frontmatter-blank"></div>
 
+        <!-- PREFACE -->
         {% if preface_text %}
-        <div class="page content-page" id="preface">
-            <h2>{{ labels.preface }}</h2>
-            <div class="content-block">{% for p in preface_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
+        <div class="fm-break fm-break-recto">
+            <div class="page content-page" id="preface">
+                <h2>{{ labels.preface }}</h2>
+                <div class="content-block">{% for p in preface_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
+            </div>
         </div>
-        <div class="page blank-page frontmatter-blank"></div>
         {% endif %}
 
         <!-- TOC -->
-        <div class="page toc-page">
-            <h1>{{ labels.index }}</h1>
-            <div class="toc-list">
-            {% for entry in toc_entries %}
-                <div class="toc-entry">
-                    <span class="entry-title"><a href="{{ entry.href }}">{{ entry.title }}</a></span>
-                    <span class="leader"></span>
-                    <span class="page-number">{% if page_map %}{{ page_map.get(entry.href) }}{% endif %}</span>
+        <div class="fm-break fm-break-recto">
+            <div class="page toc-page">
+                <h1>{{ labels.index }}</h1>
+                <div class="toc-list">
+                {% for entry in toc_entries %}
+                    <div class="toc-entry">
+                        <span class="entry-title"><a href="{{ entry.href }}">{{ entry.title }}</a></span>
+                        <span class="leader"></span>
+                        <span class="page-number">{% if page_map %}{{ page_map.get(entry.href) }}{% endif %}</span>
+                    </div>
+                {% endfor %}
                 </div>
-            {% endfor %}
             </div>
         </div>
+
         <div class="page blank-page frontmatter-blank"></div>
-        
+
         <!-- PROLOGUE -->
-        {% if prologue_text %}
-        <div class="page content-page" id="prologue">
-            <h2>{{ labels.prologue }}</h2>
-            <div class="content-block">{% for p in prologue_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
-        </div>
-        {% endif %}
-
-        <!-- CHAPTERS -->
-        {% for chapter in chapters %}
-            {% if chapter.force_blank_before_image %}<div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>{% endif %}
-            
-            {% if chapter.image_path %}
-                <div class="page image-page">
-                    <div class="image-container"><img src="{{ chapter.image_path }}" alt="Art"></div>
-                </div>
-            {% endif %}
-
-            {% if chapter.force_blank_before_title %}<div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>{% endif %}
-
-            <div class="page chapter-title-page" id="chapter-{{ loop.index }}">
-                <div class="chapter-title-content">
-                    <span class="chapter-number">{{ labels.chapter }} {{ loop.index }}{{ suffix }}</span>
-                    <h1>{{ chapter.heading }}</h1>
+        <main class="book-numbered-body">
+            {% if prologue_text %}
+            <div class="fm-break fm-break-recto">
+                <div class="page content-page" id="prologue">
+                    <h2>{{ labels.prologue }}</h2>
+                    <div class="content-block">{% for p in prologue_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
                 </div>
             </div>
-
-            <div class="page content-page">
-                <div class="content-block">{% for p in chapter.content.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
-            </div>
-        {% endfor %}  
-        
-        <!-- EPILOGUE -->
-        {% if epilogue_text %}
-            {% if force_blank_before_epilogue %}
-                <div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>
             {% endif %}
+
+            <!-- CHAPTERS -->
+            {% for chapter in chapters %}
+                {% if chapter.image_path %}
+                <div class="chapter-spread chapter-spread--image-recto">
+                    <div class="page image-page">
+                        <div class="image-container"><img src="{{ chapter.image_path }}" alt="Art"></div>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if not chapter.image_path %}<div class="chapter-spread chapter-spread--title-verso">{% endif %}
+                <div class="page chapter-title-page" id="chapter-{{ loop.index }}">
+                    <div class="chapter-title-content">
+                        <span class="chapter-number">{{ labels.chapter }} {{ loop.index }}{{ suffix }}</span>
+                        <h1>{{ chapter.heading }}</h1>
+                    </div>
+                </div>
+                {% if not chapter.image_path %}</div>{% endif %}
+
+                <div class="page content-page chapter-body-start-recto">
+                    <div class="content-block">{% for p in chapter.content.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
+                </div>
+            {% endfor %}  
             
-            <div class="page content-page" id="epilogue">
-                <h2>{{ labels.epilogue }}</h2>
-                <div class="content-block">{% for p in epilogue_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
+            <!-- EPILOGUE -->
+            {% if epilogue_text %}
+            <div class="fm-break fm-break-recto">
+                <div class="page content-page" id="epilogue">
+                    <h2>{{ labels.epilogue }}</h2>
+                    <div class="content-block">{% for p in epilogue_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
+                </div>
             </div>
         {% endif %}
+        </main>
 
-        <!-- End matter (local layout): blank, Letter to the Reader, blank, Acknowledgments -->
-        <div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>
-
-        <div class="page content-page" id="foreword">
-            <h2 style="margin-bottom: 0.5em;">A Letter to the Reader</h2>
-            <div class="content-block">
-                {% for p in foreword_text.split('\n') %}
-                    {% if p.strip() %}<p>{{ p }}</p>{% endif %}
-                {% endfor %}
+        <div class="back-matter-no-folio">
+            <div class="fm-break fm-break-recto">
+                <div class="page content-page" id="foreword">
+                    <h2 style="margin-bottom: 0.5em;">A Letter to the Reader</h2>
+                    <div class="content-block">
+                        {% for p in foreword_text.split('\n') %}
+                            {% if p.strip() %}<p>{{ p }}</p>{% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
             </div>
-        </div>
 
-        <div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>
+            <div class="page blank-page"><span style="visibility:hidden">.</span></div>
 
-        <div class="page toc-page" id="acknowledgments">
-            <h1 style="text-transform: uppercase;">{{ labels.acknowledgments }}</h1>
-            <div class="ack-grid">
-                {% for name in ack_names %}
-                    <div class="ack-item">{{ name }}</div>
-                {% endfor %}
+            <div class="fm-break fm-break-recto">
+                <div class="page toc-page" id="acknowledgments">
+                    <h1 style="text-transform: uppercase; margin-bottom: 2.5em;">{{ labels.acknowledgments }}</h1>
+                    <div class="ack-grid">
+                        {% for name in ack_names %}
+                            <div class="ack-item">{{ name }}</div>
+                        {% endfor %}
+                    </div>
+                </div>
             </div>
+            <div class="page blank-page"><span style="visibility:hidden">.</span></div>
         </div>
-        <div class="page blank-page numbered-blank"><span style="visibility:hidden">.</span></div>
     </body>
     </html>
     """)
@@ -331,16 +362,48 @@ def save_book_as_pdf(
 
     main_css_string = """
     @page { size: 139.7mm 215.9mm; margin: 20mm; @bottom-center { content: none; } }
-    @page numbered { counter-increment: page-num; @bottom-center { content: counter(page-num); font-family: 'NotoSerif', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 9pt; } }
-    @page numbered :blank { @bottom-center { content: counter(page-num); font-family: 'NotoSerif', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 9pt; } }
+    /*
+      Numbered body: one named page (main-flow) so folio increments on EVERY sheet,
+      including blanks WeasyPrint inserts for recto/verso (those pages stay on main-flow).
+    */
+    main.book-numbered-body { page: main-flow; counter-reset: page-num 0; }
+    main.book-numbered-body .fm-break,
+    main.book-numbered-body .chapter-spread,
+    main.book-numbered-body .page { page: main-flow; }
+    @page main-flow {
+        counter-increment: page-num;
+        @bottom-center {
+            content: counter(page-num);
+            font-family: 'NotoSerif', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif;
+            font-size: 9pt;
+        }
+    }
+    @page main-flow :blank {
+        @bottom-center {
+            content: counter(page-num);
+            font-family: 'NotoSerif', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif;
+            font-size: 9pt;
+        }
+    }
     @page frontmatter { @bottom-center { content: none; } }
+    @page back-unnumbered { @bottom-center { content: none; } }
     body { font-family: 'NotoSerif', 'Noto Serif CJK SC', 'Noto Sans Devanagari', 'Noto Sans', serif; font-size: 8pt; line-height: 1.6; }
     .title-page, .print-date-page, .toc-page, .frontmatter-blank, #preface { page: frontmatter; }
-    #acknowledgments { page: numbered; }
-    #prologue, #epilogue, #foreword, .chapter-title-page, .image-page, .content-page, .numbered-blank { page: numbered; }
-    #prologue { counter-reset: page-num 0; }
+    .back-matter-no-folio, .back-matter-no-folio .page, .back-matter-no-folio .content-page, .back-matter-no-folio .toc-page { page: back-unnumbered; }
+    /* Front/back matter recto-verso (WeasyPrint: page-break-before left = verso, right = recto — see WeasyPrint#241) */
+    .fm-break { display: block; margin: 0; padding: 0; }
+    .fm-break-recto { page-break-before: right; }
+    .fm-break-verso { page-break-before: left; }
+    /*
+     Chapter spread: image recto → title verso → body recto.
+     Wrappers carry breaks; .chapter-title-page is flex so breaks stay on wrappers.
+    */
+    .chapter-spread { display: block; margin: 0; padding: 0; }
+    .chapter-spread--image-recto { page-break-before: right; }
+    .chapter-spread--title-verso { page-break-before: left; }
+    .chapter-body-start-recto { page-break-before: right; }
     .page, .title-page, .print-date-page, .toc-page, .chapter-title-page, .image-page, .blank-page { page-break-after: always; position: relative; height: 100%; }
-    .image-page { margin: 0; } .image-container img { max-width: 100%; max-height: 100%; object-fit: cover; }
+    .image-page { margin: 0; } .image-container img { max-width: 100%; max-height: 100%; object-fit: cover; margin-top: 5em; }
     h1, h2, h3 { font-weight: bold; margin: 0; text-align: center; }
     .toc-page { padding: 2em 0; } .toc-page h1 { font-size: 24pt; margin-bottom: 1.2em; } .toc-list { width: 85%; margin: 0 auto; }
     .toc-entry { display: grid; grid-template-columns: auto 1fr auto; align-items: end; gap: 0 0.7em; font-size: 8pt; line-height: 1.25; margin-bottom: 0.7em; }
@@ -371,92 +434,52 @@ def save_book_as_pdf(
     base_url = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
     published_by_label = PUBLISHED_BY_LABELS.get(language.strip().lower(), PUBLISHED_BY_LABELS["english"])
-    context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text, "published_by_label": published_by_label}
-    
-    print("PDF Engine: Pass 1")
-    draft_html = html_template.render({**context, "page_map": None})
-    doc = HTML(string=draft_html, base_url=base_url).render(stylesheets=[css])
-    
-    prologue_page_index = 0
-    for i, page in enumerate(doc.pages):
-        if 'prologue' in page.anchors:
-            prologue_page_index = i
-            break
-            
-    cumulative_shift = 0
-    for i, ch in enumerate(book_data.get("chapters", [])):
-        title_page_idx = -1
-        target_anchor = f"chapter-{i+1}"
-        for p_idx, page in enumerate(doc.pages):
-            if target_anchor in page.anchors:
-                title_page_idx = p_idx
-                break
-        
-        if title_page_idx != -1:
-            current_virtual_idx = title_page_idx + cumulative_shift
-            current_page_num = (current_virtual_idx - prologue_page_index) + 1
-            if ch.get('image_path'):
-                image_page_num = current_page_num - 1
-                if image_page_num % 2 != 0: 
-                    ch['force_blank_before_image'] = True
-                    cumulative_shift += 1
-            else:
-                if current_page_num % 2 == 0:
-                    ch['force_blank_before_title'] = True
-                    cumulative_shift += 1
-    
-    print("PDF Engine: Pass 2")
     final_context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text, "published_by_label": published_by_label}
-    doc_2 = HTML(string=html_template.render({**final_context, "page_map": None}), base_url=base_url).render(stylesheets=[css])
 
-    prologue_page_index_2 = 0
-    for i, page in enumerate(doc_2.pages):
-        if 'prologue' in page.anchors:
-            prologue_page_index_2 = i
-            break
-            
+    print("PDF Engine: Pass 1 (layout + anchors for TOC)")
+    draft_html = html_template.render({**final_context, "page_map": None})
+    doc = HTML(string=draft_html, base_url=base_url).render(stylesheets=[css])
+
+    folio_start = _folio_start_page_index(doc, book_data)
+
     page_map = {}
-    if book_data.get('prologue_text'): page_map['#prologue'] = 1
+    if book_data.get("prologue_text"):
+        page_map["#prologue"] = 1
+
+    for i, page in enumerate(doc.pages):
+        if i >= folio_start:
+            real_page_number = (i - folio_start) + 1
+            for anchor_name in page.anchors:
+                if anchor_name != "prologue":
+                    page_map[f"#{anchor_name}"] = real_page_number
+
+    print("PDF Engine: Pass 2 (TOC page numbers in context)")
+    doc_2 = HTML(string=html_template.render({**final_context, "page_map": page_map}), base_url=base_url).render(stylesheets=[css])
+
+    folio_start_2 = _folio_start_page_index(doc_2, book_data)
+
+    final_page_map = {}
+    if book_data.get("prologue_text"):
+        final_page_map["#prologue"] = 1
 
     for i, page in enumerate(doc_2.pages):
-        if i >= prologue_page_index_2:
-            real_page_number = (i - prologue_page_index_2) + 1
+        if i >= folio_start_2:
+            real_page_number = (i - folio_start_2) + 1
             for anchor_name in page.anchors:
-                if anchor_name != 'prologue':
-                    page_map[f'#{anchor_name}'] = real_page_number
+                if anchor_name != "prologue":
+                    final_page_map[f"#{anchor_name}"] = real_page_number
 
-    print("PDF Engine: Pass 3")
-    doc_3 = HTML(string=html_template.render({**final_context, "page_map": page_map}), base_url=base_url).render(stylesheets=[css])
-    
-    prologue_page_index_3 = 0
-    for i, page in enumerate(doc_3.pages):
-        if 'prologue' in page.anchors:
-            prologue_page_index_3 = i
-            break
-            
-    final_page_map = {}
-    if book_data.get('prologue_text'): final_page_map['#prologue'] = 1
-
-    for i, page in enumerate(doc_3.pages):
-        if i >= prologue_page_index_3:
-            real_page_number = (i - prologue_page_index_3) + 1
-            for anchor_name in page.anchors:
-                if anchor_name != 'prologue':
-                    if anchor_name == 'epilogue':
-                        final_page_map[f'#{anchor_name}'] = real_page_number - 1
-                    else:
-                        final_page_map[f'#{anchor_name}'] = real_page_number
-
-    print("PDF Engine: Pass 4")
+    print("PDF Engine: Pass 3 (final PDF)")
     final_html = html_template.render({**final_context, "page_map": final_page_map})
-    
+    final_doc = HTML(string=final_html, base_url=base_url).render(stylesheets=[css])
+
     temp_pdf_path = output_path.replace(".pdf", "_temp.pdf")
-    HTML(string=final_html, base_url=base_url).write_pdf(temp_pdf_path, stylesheets=[css])
-    
+    final_doc.write_pdf(temp_pdf_path)
+
     try:
         flatten_pdf_fonts(temp_pdf_path, output_path)
     except Exception as e:
         print(f"Flattening failed: {e}. Using unflattened.")
         os.rename(temp_pdf_path, output_path)
-    
-    return output_path, len(HTML(string=final_html, base_url=base_url).render(stylesheets=[css]).pages)
+
+    return output_path, len(final_doc.pages)

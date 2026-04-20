@@ -14,6 +14,21 @@ services:
       - ./output:/app/output
     command: ["run_local_pipeline.py"]
 
+  batch-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - LAMBDA_TASK_ROOT=/app/generate_pdf
+    volumes:
+      - ../src/generate_pdf:/app/generate_pdf:ro
+      - ./book_pdf_exporter_local.py:/app/generate_pdf/book_pdf_exporter.py:ro
+      - ./run_local_batch_pipeline.py:/app/run_local_batch_pipeline.py:ro
+      - ./pipeline_config.json:/app/pipeline_config.json:ro
+      - ./.env:/app/.env:ro
+      - ./output:/app/output
+    command: ["run_local_batch_pipeline.py"]
+
   pdf-from-artifacts:
     build:
       context: .
