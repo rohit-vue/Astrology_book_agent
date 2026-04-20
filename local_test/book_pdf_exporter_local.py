@@ -147,6 +147,22 @@ def _folio_start_page_index(doc, book_data) -> int:
     return 0
 
 
+def _build_page_map_from_doc(doc, book_data) -> dict:
+    """Map anchor ids to body folio using a rendered document."""
+    folio_start = _folio_start_page_index(doc, book_data)
+    page_map = {}
+    if book_data.get("prologue_text"):
+        page_map["#prologue"] = 1
+
+    for i, page in enumerate(doc.pages):
+        if i >= folio_start:
+            folio_num = (i - folio_start) + 1
+            for anchor_name in page.anchors:
+                if anchor_name != "prologue":
+                    page_map[f"#{anchor_name}"] = folio_num
+    return page_map
+
+
 def save_book_as_pdf(
     title: str,
     book_data: dict,
@@ -205,7 +221,7 @@ def save_book_as_pdf(
     if book_data.get('prologue_text'): toc_base.append({"title": L['prologue'], "href": "#prologue"})
     for i, ch in enumerate(book_data.get("chapters", [])):
         toc_base.append({"title": ch["heading"], "href": f"#chapter-{i+1}"})
-    if book_data.get('epilogue_text'): toc_base.append({"title": L['epilogue'], "href": "#epilogue"})
+    if book_data.get('epilogue_text'): toc_base.append({"title": L['epilogue'], "href": "#epilogue-heading"})
 
     html_template = Template("""
     <!DOCTYPE html>
@@ -313,13 +329,13 @@ def save_book_as_pdf(
             
             <!-- EPILOGUE -->
             {% if epilogue_text %}
-            <div class="fm-break fm-break-recto">
-                <div class="page content-page" id="epilogue">
-                    <h2>{{ labels.epilogue }}</h2>
-                    <div class="content-block">{% for p in epilogue_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
+                <div class="fm-break fm-break-recto">
+                    <div class="page content-page" id="epilogue">
+                        <h2 id="epilogue-heading">{{ labels.epilogue }}</h2>
+                        <div class="content-block">{% for p in epilogue_text.split('\n\n') %}<p>{{ p }}</p>{% endfor %}</div>
+                    </div>
                 </div>
-            </div>
-        {% endif %}
+            {% endif %}
         </main>
 
         <div class="back-matter-no-folio">
@@ -430,44 +446,39 @@ def save_book_as_pdf(
     .ack-item { margin-bottom: 0.5em; }
     """
     
+    # TOC probe CSS: disable recto/verso parity padding so TOC numbers match visible folios
+    # when WeasyPrint inserts unnumbered engine blank sheets.
+    toc_probe_css_string = (
+        main_css_string
+        + """
+    .fm-break-recto,
+    .fm-break-verso,
+    .chapter-spread--image-recto,
+    .chapter-spread--title-verso,
+    .chapter-body-start-recto { page-break-before: always !important; }
+    """
+    )
+
     css = CSS(string=font_config + main_css_string)
+    toc_probe_css = CSS(string=font_config + toc_probe_css_string)
     base_url = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
     published_by_label = PUBLISHED_BY_LABELS.get(language.strip().lower(), PUBLISHED_BY_LABELS["english"])
     final_context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text, "published_by_label": published_by_label}
 
-    print("PDF Engine: Pass 1 (layout + anchors for TOC)")
-    draft_html = html_template.render({**final_context, "page_map": None})
-    doc = HTML(string=draft_html, base_url=base_url).render(stylesheets=[css])
+    print("PDF Engine: Pass 1 (TOC probe without parity padding)")
+    toc_probe_doc = HTML(
+        string=html_template.render({**final_context, "page_map": None}),
+        base_url=base_url,
+    ).render(stylesheets=[toc_probe_css])
+    page_map = _build_page_map_from_doc(toc_probe_doc, book_data)
 
-    folio_start = _folio_start_page_index(doc, book_data)
-
-    page_map = {}
-    if book_data.get("prologue_text"):
-        page_map["#prologue"] = 1
-
-    for i, page in enumerate(doc.pages):
-        if i >= folio_start:
-            real_page_number = (i - folio_start) + 1
-            for anchor_name in page.anchors:
-                if anchor_name != "prologue":
-                    page_map[f"#{anchor_name}"] = real_page_number
-
-    print("PDF Engine: Pass 2 (TOC page numbers in context)")
-    doc_2 = HTML(string=html_template.render({**final_context, "page_map": page_map}), base_url=base_url).render(stylesheets=[css])
-
-    folio_start_2 = _folio_start_page_index(doc_2, book_data)
-
-    final_page_map = {}
-    if book_data.get("prologue_text"):
-        final_page_map["#prologue"] = 1
-
-    for i, page in enumerate(doc_2.pages):
-        if i >= folio_start_2:
-            real_page_number = (i - folio_start_2) + 1
-            for anchor_name in page.anchors:
-                if anchor_name != "prologue":
-                    final_page_map[f"#{anchor_name}"] = real_page_number
+    print("PDF Engine: Pass 2 (TOC stabilization without parity padding)")
+    toc_probe_doc_2 = HTML(
+        string=html_template.render({**final_context, "page_map": page_map}),
+        base_url=base_url,
+    ).render(stylesheets=[toc_probe_css])
+    final_page_map = _build_page_map_from_doc(toc_probe_doc_2, book_data)
 
     print("PDF Engine: Pass 3 (final PDF)")
     final_html = html_template.render({**final_context, "page_map": final_page_map})

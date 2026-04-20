@@ -242,7 +242,7 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"(5) shadow expression, (6) reframing, (7) practical integration prompts.\n"
             f"**Formatting:** Plain paragraphs. No bold. No headers.\n"
             f"**Paragraphing (critical for layout):** Write like a printed book chapter, not chat.\n"
-            f"- **Vary paragraph length deliberately.** Mix shorter paragraphs (often **2–4 sentences**, about **2–3 printed lines**) with medium and longer ones. "
+            f"- **Vary paragraph length deliberately.** Mix shorter paragraphs (often **3-5 sentences**, about **2–3 printed lines**) with medium and longer ones. "
             f"Do **not** settle into a steady rhythm where every paragraph is the same size (e.g. always four or five lines).\n"
             f"- **Short paragraphs are allowed** for emphasis, a turn in thought, or a breath between ideas—use them **sometimes**, not after every sentence.\n"
             f"- Longer paragraphs are fine when the idea needs room; neighbor paragraphs may be much shorter so the page does not look like uniform blocks.\n"
