@@ -15,6 +15,52 @@ openai_client = OpenAI(api_key="dummy")
 # Updated model ID
 MODEL_ID = "gpt-5.2-2025-12-11"
 
+ARCHITECT_SYSTEM_PROMPT_FALLBACK = """You are an ASI (Artificial Superintelligence) acting as a master psychological interpreter and book architect.
+Your persona is wise, insightful, and empathetic.
+**CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**."""
+
+ARCHITECT_USER_PROMPT_FALLBACK = """**CRITICAL LANGUAGE REQUIREMENT:**
+The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
+
+**TASK:**
+Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
+
+**STRUCTURE RULES:**
+You must generate a book outline with EXACTLY 7 CHAPTERS.
+Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
+
+Use this Q&A context to personalize the outline where relevant:
+__QANDA__
+
+**TECHNICAL MANDATE: JSON OUTPUT**
+Your entire response MUST be a single, valid JSON object.
+{
+  "metadata": {
+    "title": "Book Title (in __LANGUAGE__)",
+    "subtitle": "Subtitle (in __LANGUAGE__)",
+    "footer_text": "Footer in __LANGUAGE__",
+    "preface_title": "Preface Title in __LANGUAGE__",
+    "prologue_title": "Prologue Title in __LANGUAGE__",
+    "epilogue_title": "Epilogue Title in __LANGUAGE__",
+    "dedication_title": "Career by Design or similar (in __LANGUAGE__)"
+  },
+  "ui_labels": {
+    "toc_title": "Contents (in __LANGUAGE__)",
+    "chapter_prefix": "Chapter (in __LANGUAGE__)"
+  },
+  "structure": {
+    "preface_description": "...",
+    "prologue_description": "...",
+    "epilogue_description": "...",
+    "chapters": [
+      { "title": "Chapter Title (in __LANGUAGE__)", "description": "A detailed summary (in __LANGUAGE__)." }
+    ]
+  }
+}
+
+**Comprehensive Astrological Data:**
+__ASTROLOGY_DATA__"""
+
 def parse_s3_path(s3_path):
     parsed = urlparse(s3_path, allow_fragments=False)
     return parsed.netloc, parsed.path.lstrip('/')
@@ -30,8 +76,9 @@ def get_prompts_from_ssm(natal_chart_json: dict, focus: str, language: str, qand
         system_template = sys_param['Parameter']['Value']
         user_template = user_param['Parameter']['Value']
     except Exception as e:
-        print(f"Error fetching prompts from SSM: {e}")
-        raise e
+        print(f"Error fetching prompts from SSM, using fallback prompts: {e}")
+        system_template = ARCHITECT_SYSTEM_PROMPT_FALLBACK
+        user_template = ARCHITECT_USER_PROMPT_FALLBACK
 
     system_prompt = system_template.replace("__LANGUAGE__", language)
     
