@@ -42,7 +42,7 @@ resource "null_resource" "build_generate_cover_package" {
   }
 
   provisioner "local-exec" {
-    command = <<-EOT
+    command     = <<-EOT
       docker run --rm -v "${path.module}/../:/workspace" -w /workspace python:3.11-slim sh -c "rm -rf dist/generate_cover_build && apt-get update && apt-get install -y zip fonts-noto-cjk fonts-dejavu-core && mkdir -p dist/generate_cover_build && pip install -r src/generate_cover/requirements.txt -t dist/generate_cover_build && cp -r src/generate_cover/* dist/generate_cover_build/ && find /usr/share/fonts -name 'NotoSansCJK-Regular.ttc' -print -quit | xargs -r -I{} cp -f {} dist/generate_cover_build/fonts/ && find /usr/share/fonts -name 'DejaVuSans.ttf' -print -quit | xargs -r -I{} cp -f {} dist/generate_cover_build/fonts/ && cd dist/generate_cover_build && zip -r ../generate_cover_package.zip ."
     EOT
     interpreter = ["PowerShell", "-Command"]

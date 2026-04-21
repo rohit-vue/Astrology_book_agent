@@ -45,9 +45,12 @@ resource "aws_iam_role_policy" "start_execution_permissions" {
         Resource = aws_secretsmanager_secret.api_keys_v2.arn
       },
       {
-        Action   = "states:StartExecution",
-        Effect   = "Allow",
-        Resource = aws_sfn_state_machine.astrology_book_factory.arn
+        Action = "states:StartExecution",
+        Effect = "Allow",
+        Resource = [
+          aws_sfn_state_machine.astrology_book_factory.arn,
+          aws_sfn_state_machine.astrology_book_factory_v2.arn
+        ]
       }
     ]
   })
@@ -85,6 +88,8 @@ resource "aws_lambda_function" "start_execution" {
   environment {
     variables = {
       STATE_MACHINE_ARN     = aws_sfn_state_machine.astrology_book_factory.arn
+      STATE_MACHINE_ARN_V2  = aws_sfn_state_machine.astrology_book_factory_v2.arn
+      USE_STATE_MACHINE_V2  = "false"
       BOOK_ORDERS_QUEUE_URL = aws_sqs_queue.book_orders.id
       ORDERS_TABLE_NAME     = aws_dynamodb_table.orders_table.name
       API_KEYS_SECRET_ARN   = aws_secretsmanager_secret.api_keys_v2.arn

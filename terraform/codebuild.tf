@@ -13,17 +13,17 @@ resource "aws_iam_role_policy" "codebuild_permissions" {
   name = "CodeBuildPermissions"
   role = aws_iam_role.codebuild_role.id
   policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
-      { 
-        Effect = "Allow", 
-        Action = ["ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"], 
-        Resource = "*" 
+      {
+        Effect   = "Allow",
+        Action   = ["ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart", "ecr:CompleteLayerUpload", "ecr:PutImage"],
+        Resource = "*"
       },
-      { 
-        Effect = "Allow", 
-        Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"], 
-        Resource = "*" 
+      {
+        Effect   = "Allow",
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+        Resource = "*"
       }
     ],
   })
@@ -39,10 +39,10 @@ resource "aws_codebuild_project" "pdf_generator_build" {
 
   environment {
     compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/standard:5.0" 
+    image           = "aws/codebuild/standard:5.0"
     type            = "LINUX_CONTAINER"
     privileged_mode = true
-    
+
     environment_variable {
       name  = "AWS_ACCOUNT_ID"
       value = data.aws_caller_identity.current.account_id
@@ -63,7 +63,7 @@ resource "aws_codebuild_project" "pdf_generator_build" {
 
   source {
     type      = "GITHUB"
-    location  = "https://github.com/museaskew/musesaskew-Astrology_book_agent.git" 
-    buildspec = "buildspec.yml" 
+    location  = "https://github.com/museaskew/musesaskew-Astrology_book_agent.git"
+    buildspec = "buildspec.yml"
   }
 }

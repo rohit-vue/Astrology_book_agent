@@ -15,11 +15,19 @@ dynamodb = boto3.resource('dynamodb')
 secrets_manager = boto3.client('secretsmanager')
 openai_client = OpenAI(api_key="dummy")
 
-# Get the ARN of the state machine from an environment variable
+# Get state machine ARNs from environment.
 STATE_MACHINE_ARN = os.environ['STATE_MACHINE_ARN']
+STATE_MACHINE_ARN_V2 = os.environ.get('STATE_MACHINE_ARN_V2')
+USE_STATE_MACHINE_V2 = os.environ.get('USE_STATE_MACHINE_V2', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
 BOOK_ORDERS_QUEUE_URL = os.environ.get('BOOK_ORDERS_QUEUE_URL')
 ORDERS_TABLE_NAME = os.environ.get('ORDERS_TABLE_NAME')
 API_KEYS_SECRET_ARN = os.environ.get('API_KEYS_SECRET_ARN')
+
+
+def get_selected_state_machine_arn() -> str:
+    if USE_STATE_MACHINE_V2 and STATE_MACHINE_ARN_V2:
+        return STATE_MACHINE_ARN_V2
+    return STATE_MACHINE_ARN
 
 def parse_iso_datetime(value: str) -> datetime:
     normalized = value.replace('Z', '+00:00') if isinstance(value, str) else value
@@ -238,11 +246,12 @@ def lambda_handler(event, context):
                         )
                         continue
 
-            print(f"Starting Step Function execution for order_id: {order_id}")
+            selected_state_machine_arn = get_selected_state_machine_arn()
+            print(f"Starting Step Function execution for order_id: {order_id} using {selected_state_machine_arn}")
 
             try:
                 sfn_client.start_execution(
-                    stateMachineArn=STATE_MACHINE_ARN,
+                    stateMachineArn=selected_state_machine_arn,
                     name=order_id,
                     input=json.dumps(workflow_input)
                 )

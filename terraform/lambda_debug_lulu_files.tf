@@ -35,15 +35,15 @@ data "archive_file" "debug_lulu_files_code" {
 }
 
 resource "aws_lambda_function" "debug_lulu_files" {
-  function_name = "${var.project_name}-DebugLuluFiles"
-  role          = aws_iam_role.debug_lulu_files_role.arn
-  package_type  = "Zip"
-  handler       = "app.lambda_handler"
-  runtime       = "python3.11"
-  timeout       = 120
-  filename      = data.archive_file.debug_lulu_files_code.output_path
+  function_name    = "${var.project_name}-DebugLuluFiles"
+  role             = aws_iam_role.debug_lulu_files_role.arn
+  package_type     = "Zip"
+  handler          = "app.lambda_handler"
+  runtime          = "python3.11"
+  timeout          = 120
+  filename         = data.archive_file.debug_lulu_files_code.output_path
   source_code_hash = data.archive_file.debug_lulu_files_code.output_base64sha256
-  layers = [aws_lambda_layer_version.shared_libraries.arn]
+  layers           = [aws_lambda_layer_version.shared_libraries.arn]
   environment {
     variables = { API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys_v2.arn }
   }

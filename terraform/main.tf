@@ -37,7 +37,7 @@ resource "aws_s3_bucket" "artifacts_bucket" {
 resource "aws_dynamodb_table" "orders_table" {
   name         = "${var.project_name}-Jobs"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key = "job_id"
+  hash_key     = "job_id"
 
   attribute {
     name = "job_id"
@@ -68,7 +68,7 @@ variable "aws_profile" {
 }
 
 resource "aws_s3_bucket_policy" "artifacts_bucket_policy" {
-  bucket = aws_s3_bucket.artifacts_bucket.id
+  bucket     = aws_s3_bucket.artifacts_bucket.id
   depends_on = [aws_s3_bucket_public_access_block.allow_public]
 
   policy = jsonencode({

@@ -45,25 +45,25 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
     StartAt = "WaitUntilScheduledTime"
     States = {
       WaitUntilScheduledTime = {
-        Type            = "Wait"
-        TimestampPath   = "$.factory_start_at"
-        Next            = "ProcessAllBooksInParallel"
+        Type          = "Wait"
+        TimestampPath = "$.factory_start_at"
+        Next          = "ProcessAllBooksInParallel"
       },
       ProcessAllBooksInParallel = {
-        Type      = "Map",
-        ItemsPath = "$.books",
+        Type           = "Map",
+        ItemsPath      = "$.books",
         MaxConcurrency = 5,
         Parameters = {
-          "order_id.$":         "$.order_id",
-          "shipping_address.$": "$.shipping_address",
-          "customer_details.$": "$.customer_details",
-          "line_item_id.$":     "$$.Map.Item.Value.line_item_id",
-          "cover_title.$":      "$$.Map.Item.Value.cover_title",
-          "birth_data.$":       "$$.Map.Item.Value.birth_data",
-          "shipping_code.$":    "$$.Map.Item.Value.shipping_code",
-          "focus.$":            "$$.Map.Item.Value.focus",
-          "language.$":         "$$.Map.Item.Value.language",
-          "requires_shipping.$": "$$.Map.Item.Value.requires_shipping"
+          "order_id.$" : "$.order_id",
+          "shipping_address.$" : "$.shipping_address",
+          "customer_details.$" : "$.customer_details",
+          "line_item_id.$" : "$$.Map.Item.Value.line_item_id",
+          "cover_title.$" : "$$.Map.Item.Value.cover_title",
+          "birth_data.$" : "$$.Map.Item.Value.birth_data",
+          "shipping_code.$" : "$$.Map.Item.Value.shipping_code",
+          "focus.$" : "$$.Map.Item.Value.focus",
+          "language.$" : "$$.Map.Item.Value.language",
+          "requires_shipping.$" : "$$.Map.Item.Value.requires_shipping"
         },
         Iterator = {
           StartAt = "FetchAstrologyData",
@@ -113,27 +113,27 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
             },
             CombineResultsForSequential = {
               Type = "Pass",
-              "Parameters": {
-                "final_pdf_s3_path.$":  "$.Payload.final_pdf_s3_path",
-                "cover_image_s3_url.$": "$.Payload.cover_image_s3_url",
-                "ebook_s3_path.$":      "$.Payload.ebook_s3_path",
-                "order_id.$":           "$.Payload.order_id",
-                "line_item_id.$":       "$.Payload.line_item_id",
-                "cover_title.$":        "$.Payload.cover_title",
-                "birth_data.$":         "$.Payload.birth_data",
-                "shipping_code.$":      "$.Payload.shipping_code",
-                "shipping_address.$":   "$.Payload.shipping_address",
-                "customer_details.$":   "$.Payload.customer_details",
-                "requires_shipping.$":  "$.Payload.requires_shipping"
+              "Parameters" : {
+                "final_pdf_s3_path.$" : "$.Payload.final_pdf_s3_path",
+                "cover_image_s3_url.$" : "$.Payload.cover_image_s3_url",
+                "ebook_s3_path.$" : "$.Payload.ebook_s3_path",
+                "order_id.$" : "$.Payload.order_id",
+                "line_item_id.$" : "$.Payload.line_item_id",
+                "cover_title.$" : "$.Payload.cover_title",
+                "birth_data.$" : "$.Payload.birth_data",
+                "shipping_code.$" : "$.Payload.shipping_code",
+                "shipping_address.$" : "$.Payload.shipping_address",
+                "customer_details.$" : "$.Payload.customer_details",
+                "requires_shipping.$" : "$.Payload.requires_shipping"
               },
               ResultPath = "$",
-              Next = "BookGenerationSucceeded"
+              Next       = "BookGenerationSucceeded"
             },
-            BookGenerationSucceeded = { "Type": "Succeed" }
+            BookGenerationSucceeded = { "Type" : "Succeed" }
           }
         },
         ResultPath = "$.processed_books_results",
-        Catch      = [{ "ErrorEquals": ["States.All"], "Next": "OrderFailed" }],
+        Catch      = [{ "ErrorEquals" : ["States.All"], "Next" : "OrderFailed" }],
         Next       = "AssembleFinalPayload"
       },
       AssembleFinalPayload = {
@@ -146,20 +146,30 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
       NotifyLulu = {
         Type       = "Task",
         Resource   = "arn:aws:states:::lambda:invoke",
-        Parameters = { "FunctionName": aws_lambda_function.notify_lulu.arn, "Payload.$": "$.Payload" },
+        Parameters = { "FunctionName" : aws_lambda_function.notify_lulu.arn, "Payload.$" : "$.Payload" },
         ResultPath = "$.lulu_result",
-        Catch      = [{ "ErrorEquals": ["States.All"], "Next": "OrderFailed" }],
+        Catch      = [{ "ErrorEquals" : ["States.All"], "Next" : "OrderFailed" }],
         Next       = "SendEmail"
       },
       SendEmail = {
         Type       = "Task",
         Resource   = "arn:aws:states:::lambda:invoke",
-        Parameters = { "FunctionName": aws_lambda_function.send_email.arn, "Payload.$": "$.Payload" },
+        Parameters = { "FunctionName" : aws_lambda_function.send_email.arn, "Payload.$" : "$.Payload" },
         ResultPath = "$.email_result",
         Next       = "OrderSucceeded"
       },
-      OrderSucceeded = { "Type": "Succeed" },
-      OrderFailed    = { "Type": "Fail" }
+      OrderSucceeded = { "Type" : "Succeed" },
+      OrderFailed    = { "Type" : "Fail" }
     }
   })
+}
+
+# Safe duplicate of the live state machine for v2 testing.
+# Keep this definition identical to v1 initially; update only this resource while validating batch-safe orchestration.
+resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
+  name     = "${var.project_name}-StateMachine-v2"
+  role_arn = aws_iam_role.step_functions_role.arn
+
+  # Reuse v1 definition verbatim so rollout starts from a known-good baseline.
+  definition = aws_sfn_state_machine.astrology_book_factory.definition
 }

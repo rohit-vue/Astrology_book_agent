@@ -40,7 +40,7 @@ resource "aws_lambda_function" "fetch_astrology" {
   filename         = data.archive_file.fetch_astrology_code.output_path
   source_code_hash = data.archive_file.fetch_astrology_code.output_base64sha256
 
-  timeout      = 30 # Increased from the default of 3 seconds
+  timeout = 30 # Increased from the default of 3 seconds
 
   layers = [
     aws_lambda_layer_version.shared_libraries.arn
