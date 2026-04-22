@@ -33,6 +33,30 @@ IMAGE_PROMPT_FALLBACK = (
 )
 
 
+def unwrap_payload(event):
+    """Step Functions lambda:invoke wraps handler return in Payload; nested tasks may repeat."""
+    return event.get("Payload", event)
+
+
+def state_prefix(order_id: str, line_item_id: str) -> str:
+    return f"write-chapters-state/{order_id}/{line_item_id}"
+
+
+def save_state(prefix: str, name: str, obj: dict) -> None:
+    key = f"{prefix}/{name}"
+    s3_put_json(ARTIFACTS_BUCKET, key, obj)
+
+
+def load_state(prefix: str, name: str) -> dict | None:
+    key = f"{prefix}/{name}"
+    try:
+        body = s3_client.get_object(Bucket=ARTIFACTS_BUCKET, Key=key)["Body"].read().decode("utf-8")
+        return json.loads(body)
+    except Exception as e:
+        print(f"load_state miss or error for {key}: {e}")
+        return None
+
+
 def parse_s3_path(s3_path):
     parsed = urlparse(s3_path, allow_fragments=False)
     return parsed.netloc, parsed.path.lstrip("/")
@@ -244,6 +268,36 @@ def build_chapters_data_from_results(results_by_id, manifest, order_id, line_ite
     return chapters_data
 
 
+def build_image_batch_tasks_from_structure(chapters_list, image_prompt_template):
+    """Image prompts from chapter title + description only (parallel track; no chapter text)."""
+    tasks = []
+    manifest = {}
+    for idx, ch in enumerate(chapters_list):
+        chapter_num = idx + 1
+        title = ch.get("title") or f"Chapter {chapter_num}"
+        description = (ch.get("description") or "").strip()
+        summary = description[:700] if description else ""
+        custom_id = f"image-{chapter_num}"
+        img_prompt = (
+            image_prompt_template.replace("__CHAPTER_TITLE__", title).replace("__SUMMARY__", summary)
+        )
+        tasks.append(
+            {
+                "custom_id": custom_id,
+                "method": "POST",
+                "url": "/v1/images/generations",
+                "body": {
+                    "model": MODEL_IMAGE,
+                    "prompt": img_prompt,
+                    "n": 1,
+                    "size": "1024x1536",
+                },
+            }
+        )
+        manifest[custom_id] = {"chapter_index": chapter_num, "chapter_title": title}
+    return tasks, manifest
+
+
 async def build_image_batch_tasks(chapters_data, image_prompt_template):
     tasks = []
     manifest = {}
@@ -359,7 +413,7 @@ async def generate_chapter_images_batch(chapters_data, image_prompt_template, or
             break
         retry_images_by_id, retry_failed_ids = collect_image_batch_results(sync_openai_client, retry_batch)
         merged_images_by_id.update(retry_images_by_id)
-        failed_image_ids = set(retry_ids) - set(retry_images_by_id.keys())
+        failed_image_ids = set(retry_ids) - set(merged_images_by_id.keys())
         failed_image_ids |= (set(retry_failed_ids) & set(retry_ids))
 
     return apply_images_to_chapters(
@@ -367,34 +421,14 @@ async def generate_chapter_images_batch(chapters_data, image_prompt_template, or
     )
 
 
-async def async_lambda_handler(event, context):
-    print(f"WriteChapters received event: {json.dumps(event, indent=2)}")
-    payload = event.get("Payload", event)
-
-    order_id = payload.get("order_id")
-    line_item_id = payload.get("line_item_id")
-    focus = payload.get("focus", "Personality")
-    language = payload.get("language", "English")
-    if not all([order_id, line_item_id, payload.get("astrology_json_s3_path"), payload.get("book_structure_s3_path")]):
-        raise ValueError("Missing required fields.")
-
+def configure_openai():
     secret = secrets_manager_client.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
     api_key = json.loads(secret["SecretString"]).get("OpenAIKey")
     async_openai_client.api_key = api_key
     sync_openai_client.api_key = api_key
 
-    chart = s3_get_json(payload["astrology_json_s3_path"])
-    structure = s3_get_json(payload["book_structure_s3_path"])
 
-    try:
-        image_prompt_template = ssm_client.get_parameter(
-            Name="/AstrologyBookFactory/prompts/writer/image",
-            WithDecryption=True,
-        )["Parameter"]["Value"]
-    except Exception:
-        print("SSM image prompt not found; using fallback.")
-        image_prompt_template = IMAGE_PROMPT_FALLBACK
-
+async def prepare_style_and_sections(chart, structure, focus, language):
     style_chart = build_style_chart_snapshot(chart)
     try:
         style_resp = await async_openai_client.chat.completions.create(
@@ -429,41 +463,476 @@ async def async_lambda_handler(event, context):
         )
     except Exception as e:
         print(f"Style generation failed, using fallback style: {e}")
-        style = "Tone: Warm, psychologically precise, compassionate, direct second-person. Voice rules: concrete language; grounded interpretation; practical guidance; emotionally honest pacing; no fluff. Avoid: generic filler; moralizing; vague advice; melodrama."
+        style = (
+            "Tone: Warm, psychologically precise, compassionate, direct second-person. "
+            "Voice rules: concrete language; grounded interpretation; practical guidance; emotionally honest pacing; no fluff. "
+            "Avoid: generic filler; moralizing; vague advice; melodrama."
+        )
 
     struct_inner = structure.get("structure", {})
-    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or \
+    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or (
         "Write a warm, welcoming preface setting the stage for a journey of self-discovery based on the user's astrology."
-    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or \
+    )
+    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or (
         "Write an introduction that explains the core themes of the book and invites the reader to explore their inner world."
-    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or \
+    )
+    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or (
         "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
-
-    master_foreword = """Thank you. Thank you for taking the step. Thank you for opening a book that is not quite like any other book you have held in your hands. A self help book created with the help of artificial intelligence can feel strange. It can feel like a strange kind of mirror. It can feel like a strange kind of promise. It can feel like something between a tool and a prophecy. It may make you wonder if the human heart can truly be guided by something made of code. It may make you wonder if the answers you need can be generated. It may make you wonder if your pain can be understood by something that does not feel pain.
-
-And that is a valid concern.
-
-We are living in an age of profound disconnect. We are living in a time when loneliness has become an epidemic, when people feel isolated even in crowded rooms, when social media gives us the illusion of connection while quietly starving us of the real thing. We are living in a time when we perform our lives more than we live them. And in this noise, it is easy to lose the signal of who we actually are.
-
-But here is the truth about this book: The intelligence may be artificial, but the data is yours. The patterns are yours. The story is yours.
-
-Astrology is an ancient language, a way of mapping the invisible currents that shape a life. For centuries, it has been used to help people understand their nature, their cycles, and their potential. What we have done here is use modern technology to translate that ancient language into a narrative that speaks directly to you.
-
-Think of this AI not as an author, but as a translator. It is taking the complex, mathematical snapshot of the sky at the moment you were born and translating it into words, sentences, and chapters. It is synthesizing vast amounts of astrological wisdom to find the specific threads that weave together to form the tapestry of your personality.
-
-It is not magic. It is a reflection.
-
-As you read these pages, take what resonates and leave what does not. Use this book as a starting point for your own inquiry. Let it provoke you, comfort you, challenge you, and validate you. Let it be a conversation starter between you and your own soul.
-
-You are the only expert on your own life. This book is simply a guide, a map generated from the stars to help you navigate the terrain of your own becoming.
-
-Welcome to your Blueprint."""
-    final_foreword_text = master_foreword
-    print("Foreword language fixed to English (translation skipped).")
+    )
 
     preface_text = await generate_section("Preface", preface_desc, style, language)
     prologue_text = await generate_section("Prologue", prologue_desc, style, language)
 
+    return {
+        "style": style,
+        "preface_text": preface_text,
+        "prologue_text": prologue_text,
+        "epilogue_desc": epilogue_desc,
+    }
+
+
+# --- v2 operation handlers ---
+
+
+def _echo_payload(payload: dict) -> dict:
+    """Forward fields for the next Step Functions Task; drop operation key only."""
+    out = dict(payload)
+    out.pop("operation", None)
+    return out
+
+
+async def op_submit_text_batch(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    focus = payload.get("focus", "Personality")
+    language = payload.get("language", "English")
+    prefix = state_prefix(order_id, line_item_id)
+
+    save_state(prefix, "wc_base_payload.json", dict(payload))
+
+    chart = s3_get_json(payload["astrology_json_s3_path"])
+    structure = s3_get_json(payload["book_structure_s3_path"])
+
+    try:
+        image_prompt_template = ssm_client.get_parameter(
+            Name="/AstrologyBookFactory/prompts/writer/image",
+            WithDecryption=True,
+        )["Parameter"]["Value"]
+    except Exception:
+        print("SSM image prompt not found; using fallback.")
+        image_prompt_template = IMAGE_PROMPT_FALLBACK
+
+    sections = await prepare_style_and_sections(chart, structure, focus, language)
+
+    struct_inner = structure.get("structure", {})
+    chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
+    tasks, manifest = build_chapter_batch_tasks(
+        chapters_list, chart, focus, sections["style"], language, CHAPTER_WORD_TARGET
+    )
+
+    save_state(prefix, "text_manifest.json", manifest)
+    save_state(prefix, "text_tasks.json", {"tasks": tasks})
+    save_state(prefix, "wc_sections.json", sections)
+    save_state(prefix, "wc_structure_snapshot.json", {"chapters_list": chapters_list})
+
+    batch_id = submit_batch(sync_openai_client, tasks, "/v1/chat/completions", "chapter_text")
+    save_state(
+        prefix,
+        "text_pipeline.json",
+        {
+            "merged_results_by_id": {},
+            "failed_custom_ids": [],
+            "current_batch_id": batch_id,
+            "retry_count": 0,
+            "expect_retry_submit": False,
+        },
+    )
+
+    out = {**_echo_payload(payload), "wc_state_prefix": prefix, "wc_text_batch_id": batch_id}
+    return out
+
+
+def op_check_text_batch(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+
+    pipe = load_state(prefix, "text_pipeline.json") or {}
+    batch_id = pipe.get("current_batch_id") or payload.get("wc_text_batch_id")
+    if not batch_id:
+        raise ValueError("No text batch id in state.")
+
+    batch = sync_openai_client.batches.retrieve(batch_id)
+    counts = batch.request_counts
+    terminal = batch.status in {"completed", "failed", "expired", "cancelled"}
+    print(
+        f"check_text_batch status={batch.status} terminal={terminal} "
+        f"total={counts.total} done={counts.completed} failed={counts.failed}"
+    )
+
+    out = {
+        **_echo_payload(payload),
+        "wc_state_prefix": prefix,
+        "wc_text_batch_id": batch_id,
+        "wc_text_batch_status": batch.status,
+        "wc_text_batch_terminal": terminal,
+        "wc_text_request_counts": {
+            "total": counts.total,
+            "completed": counts.completed,
+            "failed": counts.failed,
+        },
+    }
+    return out
+
+
+async def op_collect_text_results(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+
+    pipe = load_state(prefix, "text_pipeline.json") or {}
+    manifest = load_state(prefix, "text_manifest.json") or {}
+    batch_id = pipe.get("current_batch_id")
+
+    batch = sync_openai_client.batches.retrieve(batch_id)
+    if batch.status not in {"completed", "expired"}:
+        raise RuntimeError(f"Chapter text batch ended with status={batch.status}")
+
+    merged = pipe.get("merged_results_by_id") or {}
+    new_results, failed_ids = collect_chapter_batch_results(sync_openai_client, batch)
+    merged.update(new_results)
+
+    retry_count = int(pipe.get("retry_count") or 0)
+    missing_ids = set(manifest.keys()) - set(merged.keys())
+    failed_custom = (failed_ids | missing_ids) & set(manifest.keys())
+
+    save_state(prefix, "text_pipeline.json", {
+        **pipe,
+        "merged_results_by_id": merged,
+        "failed_custom_ids": sorted(failed_custom),
+        "retry_count": retry_count,
+    })
+
+    if failed_custom and retry_count < MAX_BATCH_RETRIES:
+        tasks_obj = load_state(prefix, "text_tasks.json") or {}
+        tasks = tasks_obj.get("tasks") or []
+        retry_tasks = [t for t in tasks if t["custom_id"] in failed_custom]
+        retry_count += 1
+        new_batch_id = submit_batch(
+            sync_openai_client,
+            retry_tasks,
+            "/v1/chat/completions",
+            f"chapter_text_retry_{retry_count}",
+        )
+        save_state(
+            prefix,
+            "text_pipeline.json",
+            {
+                **pipe,
+                "merged_results_by_id": merged,
+                "failed_custom_ids": sorted(failed_custom),
+                "current_batch_id": new_batch_id,
+                "retry_count": retry_count,
+                "expect_retry_submit": False,
+            },
+        )
+        return {
+            **_echo_payload(payload),
+            "wc_state_prefix": prefix,
+            "wc_text_batch_id": new_batch_id,
+            "wc_text_track_need_wait": True,
+            "wc_text_collect_complete": False,
+        }
+
+    chapters_data = build_chapters_data_from_results(merged, manifest, order_id, line_item_id)
+    if not chapters_data:
+        raise ValueError("No chapter texts were produced by batch jobs.")
+
+    save_state(prefix, "text_chapters_data.json", {"chapters_data": chapters_data})
+
+    return {
+        **_echo_payload(payload),
+        "wc_state_prefix": prefix,
+        "wc_text_collect_complete": True,
+        "wc_text_track_need_wait": False,
+    }
+
+
+async def op_submit_image_batch(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+
+    try:
+        image_prompt_template = ssm_client.get_parameter(
+            Name="/AstrologyBookFactory/prompts/writer/image",
+            WithDecryption=True,
+        )["Parameter"]["Value"]
+    except Exception:
+        image_prompt_template = IMAGE_PROMPT_FALLBACK
+
+    structure = s3_get_json(payload["book_structure_s3_path"])
+    struct_inner = structure.get("structure", {})
+    chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
+
+    tasks, manifest = build_image_batch_tasks_from_structure(chapters_list, image_prompt_template)
+    save_state(prefix, "image_manifest.json", manifest)
+    save_state(prefix, "image_tasks.json", {"tasks": tasks})
+
+    batch_id = submit_batch(sync_openai_client, tasks, "/v1/images/generations", "chapter_image")
+    save_state(
+        prefix,
+        "image_pipeline.json",
+        {
+            "merged_images_b64_by_id": {},
+            "failed_custom_ids": [],
+            "current_batch_id": batch_id,
+            "retry_count": 0,
+        },
+    )
+
+    return {
+        **_echo_payload(payload),
+        "wc_state_prefix": prefix,
+        "wc_image_batch_id": batch_id,
+    }
+
+
+def op_check_image_batch(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+
+    pipe = load_state(prefix, "image_pipeline.json") or {}
+    batch_id = pipe.get("current_batch_id") or payload.get("wc_image_batch_id")
+    if not batch_id:
+        raise ValueError("No image batch id in state.")
+
+    batch = sync_openai_client.batches.retrieve(batch_id)
+    counts = batch.request_counts
+    terminal = batch.status in {"completed", "failed", "expired", "cancelled"}
+    print(
+        f"check_image_batch status={batch.status} terminal={terminal} "
+        f"total={counts.total} done={counts.completed} failed={counts.failed}"
+    )
+
+    return {
+        **_echo_payload(payload),
+        "wc_state_prefix": prefix,
+        "wc_image_batch_id": batch_id,
+        "wc_image_batch_status": batch.status,
+        "wc_image_batch_terminal": terminal,
+        "wc_image_request_counts": {
+            "total": counts.total,
+            "completed": counts.completed,
+            "failed": counts.failed,
+        },
+    }
+
+
+async def op_collect_image_results(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+
+    pipe = load_state(prefix, "image_pipeline.json") or {}
+    manifest = load_state(prefix, "image_manifest.json") or {}
+    batch_id = pipe.get("current_batch_id")
+
+    batch = sync_openai_client.batches.retrieve(batch_id)
+    if batch.status not in {"completed", "expired"}:
+        print(f"Image batch ended with status={batch.status}; skipping images.")
+        save_state(prefix, "image_urls_by_index.json", {})
+        return {
+            **_echo_payload(payload),
+            "wc_state_prefix": prefix,
+            "wc_image_collect_complete": True,
+            "wc_image_track_need_wait": False,
+        }
+
+    merged_b64 = pipe.get("merged_images_b64_by_id") or {}
+    merged = {k: base64.b64decode(v) for k, v in merged_b64.items()}
+    new_images, failed_ids = collect_image_batch_results(sync_openai_client, batch)
+    merged.update(new_images)
+
+    retry_count = int(pipe.get("retry_count") or 0)
+    missing_ids = set(manifest.keys()) - set(merged.keys())
+    failed_custom = (failed_ids | missing_ids) & set(manifest.keys())
+
+    if failed_custom and retry_count < MAX_BATCH_RETRIES:
+        tasks_obj = load_state(prefix, "image_tasks.json") or {}
+        tasks = tasks_obj.get("tasks") or []
+        retry_tasks = [t for t in tasks if t["custom_id"] in failed_custom]
+        retry_count += 1
+        new_batch_id = submit_batch(
+            sync_openai_client,
+            retry_tasks,
+            "/v1/images/generations",
+            f"chapter_image_retry_{retry_count}",
+        )
+        merged_b64_out = {k: base64.b64encode(v).decode("ascii") for k, v in merged.items()}
+        save_state(
+            prefix,
+            "image_pipeline.json",
+            {
+                **pipe,
+                "merged_images_b64_by_id": merged_b64_out,
+                "failed_custom_ids": sorted(failed_custom),
+                "current_batch_id": new_batch_id,
+                "retry_count": retry_count,
+            },
+        )
+        return {
+            **_echo_payload(payload),
+            "wc_state_prefix": prefix,
+            "wc_image_batch_id": new_batch_id,
+            "wc_image_track_need_wait": True,
+            "wc_image_collect_complete": False,
+        }
+
+    urls_by_index = {}
+    for custom_id, info in manifest.items():
+        idx = info["chapter_index"]
+        raw = merged.get(custom_id)
+        if raw is None:
+            continue
+        key = f"chapter-images/{order_id}/{line_item_id}/chapter_{idx}.png"
+        s3_client.put_object(Bucket=ARTIFACTS_BUCKET, Key=key, Body=raw, ContentType="image/png")
+        image_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": ARTIFACTS_BUCKET, "Key": key},
+            ExpiresIn=86400,
+        )
+        urls_by_index[str(idx)] = image_url
+
+    save_state(prefix, "image_urls_by_index.json", urls_by_index)
+
+    return {
+        **_echo_payload(payload),
+        "wc_state_prefix": prefix,
+        "wc_image_collect_complete": True,
+        "wc_image_track_need_wait": False,
+    }
+
+
+async def op_finalize(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+
+    base = load_state(prefix, "wc_base_payload.json")
+    if not base:
+        base = dict(payload)
+
+    sections = load_state(prefix, "wc_sections.json") or {}
+    chapters_obj = load_state(prefix, "text_chapters_data.json") or {}
+    chapters_data = list(chapters_obj.get("chapters_data") or [])
+
+    urls_obj = load_state(prefix, "image_urls_by_index.json") or {}
+    urls_by_index = urls_obj if isinstance(urls_obj, dict) else {}
+
+    by_idx = {ch["chapter_index"]: ch for ch in chapters_data}
+    for idx_str, url in urls_by_index.items():
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            continue
+        if idx in by_idx:
+            by_idx[idx]["image_url"] = url
+
+    structure = s3_get_json(base["book_structure_s3_path"])
+    epilogue_desc = sections.get("epilogue_desc") or ""
+
+    epilogue_text = await generate_section("Epilogue", epilogue_desc, sections.get("style", ""), base.get("language", "English"))
+
+    final_output = dict(base)
+    final_output["full_book_structure"] = structure
+    final_output["generated_sections"] = {
+        "preface": sections.get("preface_text", ""),
+        "prologue": sections.get("prologue_text", ""),
+        # Foreword is sourced by generate_pdf from assets/foreword.txt.
+        "foreword": "",
+        "epilogue": epilogue_text,
+    }
+    final_output["full_book_structure"]["preface_text"] = sections.get("preface_text", "")
+    final_output["full_book_structure"]["prologue_text"] = sections.get("prologue_text", "")
+    final_output["full_book_structure"]["epilogue_text"] = epilogue_text
+    if "metadata" not in final_output["full_book_structure"]:
+        final_output["full_book_structure"]["metadata"] = structure.get(
+            "metadata", structure.get("book_metadata", {})
+        )
+    final_output["chapters_data"] = chapters_data
+
+    return final_output
+
+
+async def async_lambda_handler(event, context):
+    print(f"WriteChapters received event: {json.dumps(event, default=str, indent=2)}")
+    payload = unwrap_payload(event)
+
+    operation = payload.get("operation") if isinstance(payload, dict) else None
+    if not operation:
+        return await legacy_full_pipeline(payload)
+
+    if not all([
+        payload.get("order_id"),
+        payload.get("line_item_id"),
+        payload.get("astrology_json_s3_path"),
+        payload.get("book_structure_s3_path"),
+    ]):
+        raise ValueError("Missing required fields.")
+
+    if operation == "submit_text_batch":
+        return await op_submit_text_batch(payload)
+    if operation == "check_text_batch":
+        return op_check_text_batch(payload)
+    if operation == "collect_text_results":
+        return await op_collect_text_results(payload)
+    if operation == "submit_image_batch":
+        return await op_submit_image_batch(payload)
+    if operation == "check_image_batch":
+        return op_check_image_batch(payload)
+    if operation == "collect_image_results":
+        return await op_collect_image_results(payload)
+    if operation == "finalize":
+        return await op_finalize(payload)
+
+    raise ValueError(f"Unknown operation: {operation}")
+
+
+async def legacy_full_pipeline(payload):
+    """v1 Step Functions: single Task, synchronous batch polling (may hit Lambda timeout)."""
+    order_id = payload.get("order_id")
+    line_item_id = payload.get("line_item_id")
+    focus = payload.get("focus", "Personality")
+    language = payload.get("language", "English")
+    if not all([order_id, line_item_id, payload.get("astrology_json_s3_path"), payload.get("book_structure_s3_path")]):
+        raise ValueError("Missing required fields.")
+
+    configure_openai()
+    chart = s3_get_json(payload["astrology_json_s3_path"])
+    structure = s3_get_json(payload["book_structure_s3_path"])
+
+    try:
+        image_prompt_template = ssm_client.get_parameter(
+            Name="/AstrologyBookFactory/prompts/writer/image",
+            WithDecryption=True,
+        )["Parameter"]["Value"]
+    except Exception:
+        print("SSM image prompt not found; using fallback.")
+        image_prompt_template = IMAGE_PROMPT_FALLBACK
+
+    sections = await prepare_style_and_sections(chart, structure, focus, language)
+    style = sections["style"]
+
+    struct_inner = structure.get("structure", {})
     chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
     tasks, manifest = build_chapter_batch_tasks(
         chapters_list, chart, focus, style, language, CHAPTER_WORD_TARGET
@@ -507,18 +976,24 @@ Welcome to your Blueprint."""
         chapters_data, image_prompt_template, order_id, line_item_id
     )
 
-    epilogue_text = await generate_section("Epilogue", epilogue_desc, style, language)
+    epilogue_text = await generate_section(
+        "Epilogue",
+        sections["epilogue_desc"],
+        style,
+        language,
+    )
 
     final_output = payload
     final_output["full_book_structure"] = structure
     final_output["generated_sections"] = {
-        "preface": preface_text,
-        "prologue": prologue_text,
-        "foreword": final_foreword_text,
+        "preface": sections["preface_text"],
+        "prologue": sections["prologue_text"],
+        # Foreword is sourced by generate_pdf from assets/foreword.txt.
+        "foreword": "",
         "epilogue": epilogue_text,
     }
-    final_output["full_book_structure"]["preface_text"] = preface_text
-    final_output["full_book_structure"]["prologue_text"] = prologue_text
+    final_output["full_book_structure"]["preface_text"] = sections["preface_text"]
+    final_output["full_book_structure"]["prologue_text"] = sections["prologue_text"]
     final_output["full_book_structure"]["epilogue_text"] = epilogue_text
     if "metadata" not in final_output["full_book_structure"]:
         final_output["full_book_structure"]["metadata"] = structure.get(
