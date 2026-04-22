@@ -141,8 +141,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" = aws_lambda_function.assemble_payload.arn, "Payload.$" = "$" },
         ResultPath = "$",
-        # Temporary test mode: skip live NotifyLulu + SendEmail until re-enabled.
-        Next       = "OrderSucceeded"
+        Next       = "NotifyLulu"
       },
       NotifyLulu = {
         Type       = "Task",
@@ -167,18 +166,18 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
 
 locals {
   wc_common_payload_refs = {
-    "order_id.$"              = "$.Payload.order_id"
-    "line_item_id.$"          = "$.Payload.line_item_id"
-    "focus.$"                 = "$.Payload.focus"
-    "language.$"              = "$.Payload.language"
+    "order_id.$"               = "$.Payload.order_id"
+    "line_item_id.$"           = "$.Payload.line_item_id"
+    "focus.$"                  = "$.Payload.focus"
+    "language.$"               = "$.Payload.language"
     "astrology_json_s3_path.$" = "$.Payload.astrology_json_s3_path"
     "book_structure_s3_path.$" = "$.Payload.book_structure_s3_path"
-    "shipping_address.$"      = "$.Payload.shipping_address"
-    "customer_details.$"      = "$.Payload.customer_details"
-    "cover_title.$"           = "$.Payload.cover_title"
-    "birth_data.$"            = "$.Payload.birth_data"
-    "shipping_code.$"        = "$.Payload.shipping_code"
-    "requires_shipping.$"     = "$.Payload.requires_shipping"
+    "shipping_address.$"       = "$.Payload.shipping_address"
+    "customer_details.$"       = "$.Payload.customer_details"
+    "cover_title.$"            = "$.Payload.cover_title"
+    "birth_data.$"             = "$.Payload.birth_data"
+    "shipping_code.$"          = "$.Payload.shipping_code"
+    "requires_shipping.$"      = "$.Payload.requires_shipping"
   }
 }
 
@@ -201,16 +200,16 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
         ItemsPath      = "$.books"
         MaxConcurrency = 5
         Parameters = {
-          "order_id.$"              = "$.order_id",
-          "shipping_address.$"      = "$.shipping_address",
-          "customer_details.$"      = "$.customer_details",
-          "line_item_id.$"          = "$$.Map.Item.Value.line_item_id",
-          "cover_title.$"           = "$$.Map.Item.Value.cover_title",
-          "birth_data.$"            = "$$.Map.Item.Value.birth_data",
-          "shipping_code.$"        = "$$.Map.Item.Value.shipping_code",
-          "focus.$"                 = "$$.Map.Item.Value.focus",
-          "language.$"              = "$$.Map.Item.Value.language",
-          "requires_shipping.$"     = "$$.Map.Item.Value.requires_shipping"
+          "order_id.$"          = "$.order_id",
+          "shipping_address.$"  = "$.shipping_address",
+          "customer_details.$"  = "$.customer_details",
+          "line_item_id.$"      = "$$.Map.Item.Value.line_item_id",
+          "cover_title.$"       = "$$.Map.Item.Value.cover_title",
+          "birth_data.$"        = "$$.Map.Item.Value.birth_data",
+          "shipping_code.$"     = "$$.Map.Item.Value.shipping_code",
+          "focus.$"             = "$$.Map.Item.Value.focus",
+          "language.$"          = "$$.Map.Item.Value.language",
+          "requires_shipping.$" = "$$.Map.Item.Value.requires_shipping"
         },
         Iterator = {
           StartAt = "FetchAstrologyData",
@@ -230,7 +229,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
               Next       = "WriteChaptersParallel"
             },
             WriteChaptersParallel = {
-              Type     = "Parallel",
+              Type = "Parallel",
               Branches = [
                 {
                   StartAt = "SubmitTextBatch",
@@ -268,9 +267,9 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                       Type = "Choice",
                       Choices = [
                         {
-                          Variable     = "$.Payload.wc_text_batch_terminal",
+                          Variable      = "$.Payload.wc_text_batch_terminal",
                           BooleanEquals = false,
-                          Next         = "WaitTextPoll"
+                          Next          = "WaitTextPoll"
                         },
                         {
                           And = [
@@ -483,17 +482,17 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
             CombineResultsForSequential = {
               Type = "Pass",
               Parameters = {
-                "final_pdf_s3_path.$"      = "$.Payload.final_pdf_s3_path",
-                "cover_image_s3_url.$"    = "$.Payload.cover_image_s3_url",
-                "ebook_s3_path.$"         = "$.Payload.ebook_s3_path",
-                "order_id.$"              = "$.Payload.order_id",
-                "line_item_id.$"          = "$.Payload.line_item_id",
-                "cover_title.$"           = "$.Payload.cover_title",
-                "birth_data.$"            = "$.Payload.birth_data",
-                "shipping_code.$"        = "$.Payload.shipping_code",
-                "shipping_address.$"      = "$.Payload.shipping_address",
-                "customer_details.$"      = "$.Payload.customer_details",
-                "requires_shipping.$"     = "$.Payload.requires_shipping"
+                "final_pdf_s3_path.$"  = "$.Payload.final_pdf_s3_path",
+                "cover_image_s3_url.$" = "$.Payload.cover_image_s3_url",
+                "ebook_s3_path.$"      = "$.Payload.ebook_s3_path",
+                "order_id.$"           = "$.Payload.order_id",
+                "line_item_id.$"       = "$.Payload.line_item_id",
+                "cover_title.$"        = "$.Payload.cover_title",
+                "birth_data.$"         = "$.Payload.birth_data",
+                "shipping_code.$"      = "$.Payload.shipping_code",
+                "shipping_address.$"   = "$.Payload.shipping_address",
+                "customer_details.$"   = "$.Payload.customer_details",
+                "requires_shipping.$"  = "$.Payload.requires_shipping"
               },
               ResultPath = "$",
               Next       = "BookGenerationSucceeded"
@@ -510,22 +509,8 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" = aws_lambda_function.assemble_payload.arn, "Payload.$" = "$" },
         ResultPath = "$",
-        Next       = "NotifyLulu"
-      },
-      NotifyLulu = {
-        Type       = "Task",
-        Resource   = "arn:aws:states:::lambda:invoke",
-        Parameters = { "FunctionName" = aws_lambda_function.notify_lulu.arn, "Payload.$" = "$.Payload" },
-        ResultPath = "$.lulu_result",
-        Catch      = [{ ErrorEquals = ["States.All"], Next = "OrderFailed" }],
-        Next       = "SendEmail"
-      },
-      SendEmail = {
-        Type       = "Task",
-        Resource   = "arn:aws:states:::lambda:invoke",
-        Parameters = { "FunctionName" = aws_lambda_function.send_email.arn, "Payload.$" = "$.Payload" },
-        ResultPath = "$.email_result",
-        Next       = "OrderSucceeded"
+        # Temporary test mode for v2: skip live NotifyLulu + SendEmail.
+        Next = "OrderSucceeded"
       },
       OrderSucceeded = { Type = "Succeed" },
       OrderFailed    = { Type = "Fail" }
