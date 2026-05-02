@@ -1,3 +1,7 @@
+# AWS Lambda expects a plain Docker Image Manifest v2, not OCI index / attestations.
+# Before build (PowerShell): $env:BUILDX_NO_DEFAULT_ATTESTATIONS = "1"
+# Build from repo root: docker build -f src/generate_pdf/Dockerfile --platform linux/amd64 -t <tag> .
+# Or use flags if your Docker version supports them: --provenance=false --sbom=false
 FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm
 
 ENV LAMBDA_TASK_ROOT=/var/task

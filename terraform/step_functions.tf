@@ -22,14 +22,31 @@ resource "aws_iam_role_policy" "step_functions_permissions" {
       Effect = "Allow",
       Resource = [
         aws_lambda_function.fetch_astrology.arn,
+        "${aws_lambda_function.fetch_astrology.arn}:*",
+
         aws_lambda_function.architect_book.arn,
+        "${aws_lambda_function.architect_book.arn}:*",
+
         aws_lambda_function.write_chapters.arn,
+        "${aws_lambda_function.write_chapters.arn}:*",
+
         aws_lambda_function.generate_ebook.arn,
+        "${aws_lambda_function.generate_ebook.arn}:*",
+
         aws_lambda_function.generate_pdf.arn,
+        "${aws_lambda_function.generate_pdf.arn}:*",
+
         aws_lambda_function.notify_lulu.arn,
+        "${aws_lambda_function.notify_lulu.arn}:*",
+
         aws_lambda_function.generate_cover.arn,
+        "${aws_lambda_function.generate_cover.arn}:*",
+
         aws_lambda_function.assemble_payload.arn,
-        aws_lambda_function.send_email.arn
+        "${aws_lambda_function.assemble_payload.arn}:*",
+
+        aws_lambda_function.send_email.arn,
+        "${aws_lambda_function.send_email.arn}:*"
       ]
     }]
   })
@@ -85,7 +102,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
             WriteChapters = {
               Type       = "Task",
               Resource   = "arn:aws:states:::lambda:invoke",
-              Parameters = { "FunctionName" = "${aws_lambda_function.write_chapters.arn}:1", "Payload.$" = "$" },
+              Parameters = { "FunctionName" = "${aws_lambda_function.write_chapters.arn}:prod", "Payload.$" = "$" },
               ResultPath = "$",
               Next       = "GenerateEbook"
             },

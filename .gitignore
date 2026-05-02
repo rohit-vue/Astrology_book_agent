@@ -1,7 +1,7 @@
 # Python / Virtual Environments
 __pycache__/
 *.pyc
-venv/
+.venv/
 .env
 
 # Build Artifacts & Packages
