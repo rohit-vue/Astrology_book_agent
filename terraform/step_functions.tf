@@ -526,8 +526,22 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" = aws_lambda_function.assemble_payload.arn, "Payload.$" = "$" },
         ResultPath = "$",
-        # Temporary test mode for v2: skip live NotifyLulu + SendEmail.
-        Next = "OrderSucceeded"
+        Next       = "NotifyLulu"
+      },
+      NotifyLulu = {
+        Type       = "Task",
+        Resource   = "arn:aws:states:::lambda:invoke",
+        Parameters = { "FunctionName" = aws_lambda_function.notify_lulu.arn, "Payload.$" = "$.Payload" },
+        ResultPath = "$.lulu_result",
+        Catch      = [{ ErrorEquals = ["States.All"], Next = "OrderFailed" }],
+        Next       = "SendEmail"
+      },
+      SendEmail = {
+        Type       = "Task",
+        Resource   = "arn:aws:states:::lambda:invoke",
+        Parameters = { "FunctionName" = aws_lambda_function.send_email.arn, "Payload.$" = "$.Payload" },
+        ResultPath = "$.email_result",
+        Next       = "OrderSucceeded"
       },
       OrderSucceeded = { Type = "Succeed" },
       OrderFailed    = { Type = "Fail" }
