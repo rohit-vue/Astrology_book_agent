@@ -22,6 +22,10 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
     **TASK:**
     Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
 
+    **RULES FOR THE MAIN BOOK TITLE AND CHAPTER TITLES:**
+    - Maximum 70 total characters INCLUDING spaces.
+    - Prefer Maximum 10-11 words total for the book title.
+    
     **STRUCTURE RULES:**
     You must generate a book outline with EXACTLY 7 CHAPTERS.
     Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
