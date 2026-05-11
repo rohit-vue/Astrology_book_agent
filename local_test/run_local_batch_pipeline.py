@@ -69,6 +69,10 @@ The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE
 **TASK:**
 Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
 
+**RULES FOR THE MAIN BOOK TITLE AND CHAPTER TITLES:**
+- Maximum 70 total characters INCLUDING spaces.
+- Prefer Maximum 10-11 words total for the book title.
+
 **STRUCTURE RULES:**
 You must generate a book outline with EXACTLY 7 CHAPTERS.
 Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
@@ -176,7 +180,7 @@ def fetch_astrology(birth_data, order_id):
 
 def architect_book(astrology_data, focus, language):
     print("\n" + "=" * 60)
-    print("STEP 2: Architecting Book Structure")
+    print("STEP 2: Architecting Book Structure for the focus: ", focus, " in language: ", language)
     print("=" * 60)
 
     system_prompt = ARCHITECT_SYSTEM_PROMPT.replace("__LANGUAGE__", language)
@@ -739,11 +743,20 @@ async def generate_section(client, name, description, style, language):
         return ""
     print(f"  Generating {name}...")
     prompt = f"""
-    Write the {name} for a personal astrology book.
+    Generate narrative prose content for a personal astrology book section.
+
+    Section Type: {name}
     Language: {language}
     Style: {style}
     Context: {description}
-    Directive: Write in second person ("You"). Start directly. Plain text only.
+
+    STRICT RULES:
+    - Output ONLY body text.
+    - No headings or titles.
+    - No markdown.
+    - No labels.
+    - Start directly with prose.
+    - Second person POV ("You").
     """
     try:
         resp = await client.chat.completions.create(

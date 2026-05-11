@@ -84,6 +84,20 @@ PUBLISHED_BY_LABELS = {
     "russian": "Izdano"
 }
 
+FOOTER_DATE_LABELS = {
+    "english": {"written_on": "Written on", "written_for": "Written for"},
+    "spanish": {"written_on": "Escrito el", "written_for": "Escrito para"},
+    "french": {"written_on": "Ecrit le", "written_for": "Ecrit pour"},
+    "german": {"written_on": "Geschrieben am", "written_for": "Geschrieben fuer"},
+    "italian": {"written_on": "Scritto il", "written_for": "Scritto per"},
+    "portuguese": {"written_on": "Escrito em", "written_for": "Escrito para"},
+    "japanese": {"written_on": "作成日", "written_for": "作成対象"},
+    "hindi": {"written_on": "लिखा गया", "written_for": "के लिए लिखा गया"},
+    "chinese": {"written_on": "写于", "written_for": "写给"},
+    "korean": {"written_on": "작성일", "written_for": "대상"},
+    "russian": {"written_on": "Написано", "written_for": "Написано для"},
+}
+
 def load_text_asset(filename):
     """Loads text from assets folder."""
     base_path = os.environ.get('LAMBDA_TASK_ROOT', os.path.dirname(__file__))
@@ -196,8 +210,12 @@ def save_book_as_pdf(
     lat_str = str(lat)
     lon_str = str(lon)
     
+    footer_labels = FOOTER_DATE_LABELS.get(lang_key.strip().lower(), FOOTER_DATE_LABELS["english"])
     today_str = datetime.now().strftime('%Y-%m-%d')
-    footer_text = f"Written on {today_str}\nWritten for {birth_str} ({lat_str}, {lon_str})"
+    footer_text = (
+        f"{footer_labels['written_on']} {today_str}\n"
+        f"{footer_labels['written_for']} {birth_str} ({lat_str}, {lon_str})"
+    )
     footer_date = footer_text
     print(f"[DEBUG] FINAL FOOTER SENT TO PDF:\n{footer_text}")
 
@@ -228,37 +246,35 @@ def save_book_as_pdf(
     <html lang="{{ lang }}">
     <head><meta charset="UTF-8"><title>{{ book_title }}</title></head>
     <body>
-        <div class="page blank-page frontmatter-blank"></div>
-        <div class="page blank-page frontmatter-blank"></div>
-        
         <!-- HALF TITLE -->
         <div class="page title-page">
             <div class="half-title">{{ published_by_label }} LUMINARY BLUEPRINT</div>
         </div>
+
         <div class="page blank-page frontmatter-blank"></div>
 
-        <!-- FULL TITLE -->
-        <div class="fm-break fm-break-recto">
-            <div class="page title-page">
-                <div class="title-main-block">
-                    <div class="title-decoration">✧</div>
-                    <h1 class="book-title">{{ book_title }}</h1>
-                    <div class="title-decoration">✦</div>
-                </div>
-            </div>
-        </div>
-
         <!-- PRINT DATE -->
-        <div class="fm-break fm-break-verso">
+        <div class="fm-break fm-break-recto">
             <div class="page print-date-page">
                 <div style="white-space: pre-wrap; text-align: center; line-height: 2.0;">{{ footer_date }}</div>
             </div>
         </div>
 
         <!-- DEDICATION -->
-        <div class="fm-break fm-break-recto">
+        <div class="fm-break fm-break-verso">
             <div class="page title-page">
                 <div class="half-title">{{ dedication_title }}</div>
+            </div>
+        </div>
+
+        <!-- FULL TITLE -->
+        <div class="fm-break fm-break-recto">
+            <div class="page title-page">
+                <div class="title-main-block">
+                    <div class="title-decoration">✧</div>
+                    <h1 class="book-title" style="text-transform: uppercase;">{{ book_title }}</h1>
+                    <div class="title-decoration">✦</div>
+                </div>
             </div>
         </div>
 

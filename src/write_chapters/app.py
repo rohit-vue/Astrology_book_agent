@@ -81,11 +81,18 @@ async def generate_section(name, description, style, language):
         return ""
     print(f"Generating {name}...")
     prompt = f"""
-    Write the {name} for a personal astrology book.
+    Generate narrative prose content for a personal astrology book section.
+    Section Type: {name}
     Language: {language}
     Style: {style}
     Context: {description}
-    Directive: Write in second person ("You"). Start directly. Plain text only.
+    STRICT RULES:
+    - Output ONLY body text.
+    - No headings or titles.
+    - No markdown.
+    - No labels.
+    - Start directly with prose.
+    - Second person POV ("You").
     """
     try:
         resp = await async_openai_client.chat.completions.create(
