@@ -492,7 +492,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
             GenerateCoverImageWithPageCount = {
               Type       = "Task",
               Resource   = "arn:aws:states:::lambda:invoke",
-              Parameters = { "FunctionName" = aws_lambda_function.generate_cover.arn, "Payload.$" = "$" },
+              Parameters = { "FunctionName" = "${aws_lambda_function.generate_cover.arn}:prod", "Payload.$" = "$" },
               ResultPath = "$",
               Next       = "CombineResultsForSequential"
             },

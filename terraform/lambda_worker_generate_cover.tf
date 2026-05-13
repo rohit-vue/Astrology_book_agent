@@ -38,7 +38,7 @@ resource "null_resource" "build_generate_cover_package" {
     app_py_hash      = filemd5("${path.module}/../src/generate_cover/app.py")
     reqs_txt_hash    = filemd5("${path.module}/../src/generate_cover/requirements.txt")
     font_files_hash  = md5(join("", [for f in fileset("${path.module}/../src/generate_cover/fonts", "*") : filemd5("${path.module}/../src/generate_cover/fonts/${f}")]))
-    build_recipe_rev = "cjk-font-support-v1"
+    build_recipe_rev = "lulu-cover-dimensions-v1"
   }
 
   provisioner "local-exec" {
@@ -76,8 +76,10 @@ resource "aws_lambda_function" "generate_cover" {
 
   environment {
     variables = {
-      API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys_v2.arn
-      ARTIFACTS_BUCKET    = aws_s3_bucket.artifacts_bucket.id
+      API_KEYS_SECRET_ARN   = aws_secretsmanager_secret.api_keys_v2.arn
+      ARTIFACTS_BUCKET      = aws_s3_bucket.artifacts_bucket.id
+      LULU_API_BASE         = "https://api.lulu.com"
+      LULU_POD_PACKAGE_ID   = "0550X0850.BW.STD.LW.060UC444.MNG"
     }
   }
 }
