@@ -234,13 +234,11 @@ def save_book_as_pdf(
     <html lang="{{ lang }}">
     <head><meta charset="UTF-8"><title>{{ book_title }}</title></head>
     <body>
-        <div class="page blank-page frontmatter-blank"></div>
-        <div class="page blank-page frontmatter-blank"></div>
-        
         <!-- HALF TITLE -->
         <div class="page title-page">
             <div class="half-title">{{ published_by_label }} LUMINARY BLUEPRINT</div>
         </div>
+
         <div class="page blank-page frontmatter-blank"></div>
 
         <!-- PRINT DATE -->
@@ -267,6 +265,7 @@ def save_book_as_pdf(
                 </div>
             </div>
         </div>
+        
         <div class="page blank-page frontmatter-blank"></div>
 
         <!-- PREFACE -->
