@@ -43,18 +43,13 @@ def lambda_handler(event, context):
         raw_order_id = payload.get('order_id', '')
         clean_order_id = raw_order_id.replace("shpfy_", "")
 
-        raw_ship_code = "STANDARD"
-        if processed_books_results and len(processed_books_results) > 0:
-            raw_ship_code = processed_books_results[0].get('shipping_code', 'STANDARD').upper()
-            
         lulu_shipping_level = "MAIL"
+        if processed_books_results and len(processed_books_results) > 0:
+            provided = processed_books_results[0].get("shipping_code")
+            if provided is not None and str(provided).strip() != "":
+                lulu_shipping_level = str(provided).strip()
 
-        if "EXPRESS" in raw_ship_code or "PRIORITY" in raw_ship_code:
-            lulu_shipping_level = "EXPRESS" 
-        elif "GROUND" in raw_ship_code:
-            lulu_shipping_level = "GROUND"
-
-        print(f"Shipping code: {raw_ship_code} -> Lulu Level: {lulu_shipping_level}")
+        print(f"Lulu shipping_level: {lulu_shipping_level}")
 
         line_items = []
         for book_result in processed_books_results:
