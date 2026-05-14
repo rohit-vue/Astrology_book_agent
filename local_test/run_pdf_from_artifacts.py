@@ -56,7 +56,9 @@ def main():
         config = json.load(f)
 
     language = config.get("language", "English")
+    focus = config.get("focus", "Personality")
     print(f"[local artifacts] Language from pipeline_config.json: {language}")
+    print(f"[local artifacts] Focus from pipeline_config.json: {focus}")
 
     astro_path = os.path.join(ARTIFACTS_DIR, "astrology_data.json")
     struct_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
@@ -141,6 +143,7 @@ def main():
         "preface_text": preface_text,
         "prologue_text": prologue_text,
         "epilogue_text": epilogue_text,
+        "focus": (focus or "").strip(),
         "chapters": chapters,
     }
 

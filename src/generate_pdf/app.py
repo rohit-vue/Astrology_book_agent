@@ -58,6 +58,7 @@ def lambda_handler(event, context):
             "preface_text": preface_text,
             "prologue_text": prologue_text,
             "epilogue_text": epilogue_text,
+            "focus": (payload.get("focus") or "").strip(),
             "chapters": []
         }
         

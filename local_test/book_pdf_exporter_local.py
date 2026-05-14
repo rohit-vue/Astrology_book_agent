@@ -233,7 +233,11 @@ def save_book_as_pdf(
     ack_names = load_json_asset("acknowledgments.json")
 
     meta = book_data.get('metadata', {})
-    dedication_title = meta.get('dedication_title', 'Career by Design')
+    focus_raw = (book_data.get("focus") or "").strip()
+    if focus_raw:
+        dedication_title = f"{focus_raw} BY DESIGN".upper()
+    else:
+        dedication_title = meta.get('dedication_title', 'Career by Design')
 
     toc_base = []
     if book_data.get('prologue_text'): toc_base.append({"title": L['prologue'], "href": "#prologue"})
