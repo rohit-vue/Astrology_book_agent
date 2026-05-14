@@ -385,7 +385,7 @@ async def write_chapters(astrology_data, structure, focus, language):
 # STEP 4: Generate PDF
 # ===========================================================================
 
-def generate_pdf(write_result, birth_data, language):
+def generate_pdf(write_result, birth_data, language, focus=None):
     print("\n" + "=" * 60)
     print("STEP 4: Generating PDF")
     print("=" * 60)
@@ -399,6 +399,7 @@ def generate_pdf(write_result, birth_data, language):
         "preface_text": write_result["preface_text"],
         "prologue_text": write_result["prologue_text"],
         "epilogue_text": write_result["epilogue_text"],
+        "focus": (focus or "").strip(),
         "chapters": [],
     }
 
@@ -468,7 +469,7 @@ def main():
         )
     print(f"  Saved -> {sections_path}")
 
-    pdf_path, page_count = generate_pdf(write_result, birth_data, language)
+    pdf_path, page_count = generate_pdf(write_result, birth_data, language, focus=focus)
 
     elapsed = time.time() - start
     print("\n" + "=" * 60)
