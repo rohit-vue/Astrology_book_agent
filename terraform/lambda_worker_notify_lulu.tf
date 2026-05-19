@@ -46,7 +46,7 @@ resource "aws_lambda_function" "notify_lulu" {
   package_type = "Zip"
   handler      = "app.lambda_handler"
   runtime      = "python3.11"
-  timeout      = 60
+  timeout      = 120
 
   filename         = data.archive_file.notify_lulu_code.output_path
   source_code_hash = data.archive_file.notify_lulu_code.output_base64sha256
@@ -57,7 +57,12 @@ resource "aws_lambda_function" "notify_lulu" {
 
   environment {
     variables = {
-      API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys_v2.arn
+      API_KEYS_SECRET_ARN         = aws_secretsmanager_secret.api_keys_v2.arn
+      LULU_POD_PACKAGE_ID         = "0550X0850.BW.STD.LW.060UC444.MNG"
+      LULU_CONTACT_EMAIL          = "orders@luminaryblueprint.com"
+      LULU_PRODUCTION_DELAY_MINUTES = "60"
+      LULU_PRINT_JOB_MAX_RETRIES        = "3"
+      LULU_PRINT_JOB_RETRY_BACKOFF_SECONDS = "2"
     }
   }
 }

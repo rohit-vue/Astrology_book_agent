@@ -1,0 +1,777 @@
+# GPT-5.5 prompting guide
+
+Prompt GPT-5.5 with outcome-first goals, concise style controls, retrieval budgets, and validation loops.
+
+## New in GPT-5.5 vs GPT-5.4
+- Shorter, outcome-first prompts usually work better than process-heavy prompt stacks.
+- More efficient reasoning means `low` and `medium` effort should be re-evaluated before escalating.
+- Preambles, `phase` handling, and assistant-item replay remain important for tool-heavy Responses workflows.
+- Explicit personality, retrieval budgets, and validation rules help shape customer-facing and agentic UX.
+
+GPT-5.5 works best when prompts define the outcome and leave room for the model to choose an efficient solution path. Compared with earlier models, you can often use shorter, more outcome-oriented prompts: describe what good looks like, what constraints matter, what evidence is available, and what the final answer should contain.
+
+Avoid carrying over every instruction from an older prompt stack. Legacy prompts often over-specify the process because earlier models needed more help staying on track. With GPT-5.5, that can add noise, narrow the model's search space, or lead to overly mechanical answers.
+
+For more detail on GPT-5.5 behavior changes, start with the [Using GPT-5.5 guide](https://developers.openai.com/api/docs/guides/latest-model). This guide focuses on prompt changes that follow from those behavior changes.
+
+The patterns here are starting points. Adapt them to your product surface, tools, evals, and user experience goals.
+
+## Automated migration with Codex
+
+Codex can implement the changes from this guide with the [OpenAI Docs Skill](https://github.com/openai/skills/tree/main/skills/.curated/openai-docs).
+
+```text
+$openai-docs migrate this project to gpt-5.5
+```
+
+To use this skill in other coding agents, download it from the [OpenAI skills repository](https://github.com/openai/skills/tree/main/skills/.curated/openai-docs).
+
+## Personality and behavior
+
+GPT-5.5's default style is efficient, direct, and task-oriented. This is useful for production systems: responses stay focused, behavior is easier to steer, and the model avoids unnecessary conversational padding.
+
+For customer-facing assistants, support workflows, coaching experiences, and other conversational products, define both personality and collaboration style.
+
+- **Personality** controls how the assistant sounds: tone, warmth, directness, formality, humor, empathy, and level of polish.
+- **Collaboration style** controls how the assistant works: when it asks questions, when it makes assumptions, how proactive it should be, how much context it gives, when it checks work, and how it handles uncertainty or risk.
+
+Keep both short. Personality instructions should shape the user experience. Collaboration instructions should shape task behavior. Neither should replace clear goals, success criteria, tool rules, or stopping conditions.
+
+Example personality block for a steady task-focused assistant:
+
+```text
+# Personality
+You are a capable collaborator: approachable, steady, and direct. Assume the user is competent and acting in good faith, and respond with patience, respect, and practical helpfulness.
+
+Prefer making progress over stopping for clarification when the request is already clear enough to attempt. Use context and reasonable assumptions to move forward. Ask for clarification only when the missing information would materially change the answer or create meaningful risk, and keep any question narrow.
+
+Stay concise without becoming curt. Give enough context for the user to understand and trust the answer, then stop. Use examples, comparisons, or simple analogies when they make the point easier to grasp. When correcting the user or disagreeing, be candid but constructive. When an error is pointed out, acknowledge it plainly and focus on fixing it.
+
+Match the user's tone within professional bounds. Avoid emojis and profanity by default, unless the user explicitly asks for that style or has clearly established it as appropriate for the conversation.
+```
+
+Example personality block for an expressive collaborative assistant:
+
+```text
+# Personality
+Adopt a vivid conversational presence: intelligent, curious, playful when appropriate, and attentive to the user's thinking. Ask good questions when the problem is blurry, then become decisive once there is enough context.
+
+Be warm, collaborative, and polished. Conversation should feel easy and alive, but not chatty for its own sake. Offer a real point of view rather than merely mirroring the user, while staying responsive to their goals and constraints.
+
+Be thoughtful and grounded when the task calls for synthesis or advice. State a clear recommendation when you have enough context, explain important tradeoffs, and name uncertainty without becoming evasive.
+```
+
+For more expressive products, add warmth, curiosity, humor, or point of view explicitly, but keep the block short. Use personality to shape the experience, not to compensate for unclear goals or missing task instructions.
+
+## Improve time to first visible token with a preamble
+
+In streaming applications, users notice how long it takes before the first visible response appears. GPT-5.5 may spend time reasoning, planning, or preparing tool calls before emitting visible text.
+
+For longer or tool-heavy tasks, prompt the model to start with a short preamble: a brief visible update that acknowledges the request and states the first step. This can improve perceived responsiveness without changing the underlying task.
+
+Use this pattern when the task may take more than one step, require tool calls, or involve a long-running agent workflow.
+
+```text
+Before any tool calls for a multi-step task, send a short user-visible update that acknowledges the request and states the first step. Keep it to one or two sentences.
+```
+
+For coding agents that expose separate message phases, you can be more explicit:
+
+```text
+You must always start with an intermediary update before any content in the analysis channel if the task will require calling tools. The user update should acknowledge the request and explain your first step.
+```
+
+## Outcome-first prompts and stopping conditions
+
+GPT-5.5 is strongest when the prompt defines the target outcome, success criteria, constraints, and available context, then lets the model choose the path.
+
+For many tasks, describe the destination rather than every step. This gives the model room to choose the right search, tool, or reasoning strategy for the task.
+
+Prefer this:
+
+```text
+Resolve the customer's issue end to end.
+
+Success means:
+- the eligibility decision is made from the available policy and account data
+- any allowed action is completed before responding
+- the final answer includes completed_actions, customer_message, and blockers
+- if evidence is missing, ask for the smallest missing field
+```
+
+**Avoid unnecessary absolute rules.** Older prompts often use strict instructions like `ALWAYS`, `NEVER`, `must`, and `only` to control model behavior. Use those words for true invariants, such as safety rules, required output fields, or actions that should never happen. For judgment calls, such as when to search, ask for clarification, use a tool, or keep iterating, prefer decision rules instead.
+
+Avoid this style of instruction unless every step is truly required:
+
+```text
+First inspect A, then inspect B, then compare every field, then think through
+all possible exceptions, then decide which tool to call, then call the tool,
+then explain the entire process to the user.
+```
+
+Add explicit stopping conditions:
+
+```text
+Resolve the user query in the fewest useful tool loops, but do not let loop minimization outrank correctness, accessible fallback evidence, calculations, or required citation tags for factual claims.
+
+After each result, ask: "Can I answer the user's core request now with useful evidence and citations for the factual claims?" If yes, answer.
+```
+
+Define missing-evidence behavior:
+
+```text
+Use the minimum evidence sufficient to answer correctly, cite it precisely, then stop.
+```
+
+## Formatting
+
+GPT-5.5 is highly steerable on output format and structure. Use that control when it improves comprehension or product fit.
+
+Set `text.verbosity`, describe the expected output shape, and reserve heavier structure for cases where it improves comprehension or your product UI needs a stable artifact. The API default for `text.verbosity` is `medium`; use `low` when you prefer shorter, more concise responses.
+
+Plain conversational formatting:
+
+```text
+Let formatting serve comprehension. Use plain paragraphs as the default format for normal conversation, explanations, reports, documentation, and technical writeups. Keep the presentation clean and readable without making the structure feel heavier than the content.
+
+Use headers, bold text, bullets, and numbered lists sparingly. Reach for them when the user requests them, when the answer needs clear comparison or ranking, or when the information would be harder to scan as prose. Otherwise, favor short paragraphs and natural transitions.
+
+Respect formatting preferences from the user. If they ask for a terse answer, minimal formatting, no bullets, no headers, or a specific structure, follow that preference unless there is a strong reason not to.
+```
+
+Add explicit audience and length guidance:
+
+```text
+Write for a senior business audience. Keep the answer under 400 words. Use short paragraphs and only include bullets when they improve scannability. Prioritize the conclusion first, then the reasoning, then caveats.
+```
+
+For editing, rewriting, summaries, or customer-facing messages, tell the model what to preserve before asking it to improve style. This pattern is useful when you want polish without expansion.
+
+```text
+Preserve the requested artifact, length, structure, and genre first. Quietly improve clarity, flow, and correctness. Do not add new claims, extra sections, or a more promotional tone unless explicitly requested.
+```
+
+## Grounding, citations, and retrieval budgets
+
+For grounded answers, citation behavior should be part of the prompt. Define what needs support, what counts as enough evidence, and how the model should behave when evidence is missing. Absence of evidence shouldn't automatically become a factual "no." For more details and examples, see the [citation formatting guide](https://developers.openai.com/api/docs/guides/citation-formatting).
+
+### Add an explicit retrieval budget
+
+Retrieval budgets are stopping rules for search. They tell the model when enough evidence is enough.
+
+```text
+For ordinary Q&A, start with one broad search using short, discriminative keywords. If the top results contain enough citable support for the core request, answer from those results instead of searching again.
+
+Make another retrieval call only when:
+- The top results do not answer the core question.
+- A required fact, parameter, owner, date, ID, or source is missing.
+- The user asked for exhaustive coverage, a comparison, or a comprehensive list.
+- A specific document, URL, email, meeting, record, or code artifact must be read.
+- The answer would otherwise contain an important unsupported factual claim.
+
+Do not search again to improve phrasing, add examples, cite nonessential details, or support wording that can safely be made more generic.
+```
+
+## Creative drafting guardrails
+
+For drafting tasks, tell the model which claims must come from sources and which parts may be creatively written. This is especially important for slides, launch copy, customer summaries, talk tracks, leadership blurbs, and narrative framing.
+
+```text
+For creative or generative requests such as slides, leadership blurbs, outbound copy, summaries for sharing, talk tracks, or narrative framing, distinguish source-backed facts from creative wording.
+
+- Use retrieved or provided facts for concrete product, customer, metric, roadmap, date, capability, and competitive claims, and cite those claims.
+- Do not invent specific names, first-party data claims, metrics, roadmap status, customer outcomes, or product capabilities to make the draft sound stronger.
+- If there is little or no citable support, write a useful generic draft with placeholders or clearly labeled assumptions rather than unsupported specifics.
+```
+
+## Frontend engineering and visual taste
+
+For frontend work, refer to the [example instructions](https://developers.openai.com/api/docs/guides/frontend-prompt) for practical ways to steer UI quality. They cover product and user context, design-system alignment, first-screen usability, familiar controls, expected states, responsive behavior, and common generated-UI defaults to avoid, such as generic heroes, nested cards, decorative gradients, visible instructional text, and broken layouts.
+
+## Prompt the model to check its work
+
+Give GPT-5.5 access to tools that let it check outputs when validation is possible.
+
+For coding agents, ask for concrete validation commands:
+
+```text
+After making changes, run the most relevant validation available:
+- targeted unit tests for changed behavior
+- type checks or lint checks when applicable
+- build checks for affected packages
+- a minimal smoke test when full validation is too expensive
+
+If validation cannot be run, explain why and describe the next best check.
+```
+
+For visual artifacts, ask for inspection after rendering:
+
+```text
+Render the artifact before finalizing. Inspect the rendered output for layout, clipping, spacing, missing content, and visual consistency. Revise until the rendered output matches the requirements.
+```
+
+For engineering and planning tasks, make implementation plans traceable:
+
+```text
+For implementation plans, include:
+- requirements and where each is addressed
+- named resources, files, APIs, or systems involved
+- state transitions or data flow where relevant
+- validation commands or checks
+- failure behavior
+- privacy and security considerations
+- open questions that materially affect implementation
+```
+
+## Phase parameter
+
+Starting with GPT-5.4, long-running or tool-heavy Responses workflows can use assistant-item `phase` values to distinguish intermediate updates from final answers. GPT-5.5 uses the same pattern.
+
+If you use `previous_response_id`, the API preserves prior assistant state automatically. If your application manually replays assistant output items into the next request, preserve each original `phase` value and pass it back unchanged. This matters most when a response includes preambles, repeated tool calls, or a final answer after intermediate assistant updates.
+
+```text
+If manually replaying assistant items:
+- Preserve assistant `phase` values exactly.
+- Use `phase: "commentary"` for intermediate user-visible updates.
+- Use `phase: "final_answer"` for the completed answer.
+- Do not add `phase` to user messages.
+```
+
+## Suggested prompt structure
+
+Use this structure as a starting point for complex prompts. Keep each section short. Add detail only where it changes behavior.
+
+```text
+Role: [1-2 sentences defining the model's function, context, and job]
+
+# Personality
+[tone, demeanor, and collaboration style]
+
+# Goal
+[user-visible outcome]
+
+# Success criteria
+[what must be true before the final answer]
+
+# Constraints
+[policy, safety, business, evidence, and side-effect limits]
+
+# Output
+[sections, length, and tone]
+
+# Stop rules
+[when to retry, fallback, abstain, ask, or stop]
+```
+
+
+---
+latestModelInfo:
+  model: gpt-5.5
+  migrationGuide: /api/docs/guides/upgrading-to-gpt-5p5.md
+  promptingGuide: /api/docs/guides/prompt-guidance.md
+---
+
+# Using GPT-5.5
+
+## Introduction
+
+GPT-5.5 raises the baseline for complex production workflows. It’s a strong fit for coding use cases, tool-heavy agents, grounded assistants, long-context retrieval, product-spec-to-plan workflows, and customer-facing workflows where execution quality and response polish are critical.
+
+To get the most out of GPT-5.5, treat it as a new model family to tune for, not a drop-in replacement for `gpt-5.2` or `gpt-5.4`. Begin migration with a fresh baseline instead of carrying over every instruction from an older prompt stack. Start with the smallest prompt that preserves the product contract, then tune reasoning effort, verbosity, tool descriptions, and output format against representative examples.
+
+GPT-5.5 supports all API features that were already available with GPT-5.4, including [prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [hosted tools](https://developers.openai.com/api/docs/guides/tools#available-tools), [tool search](https://developers.openai.com/api/docs/guides/tools-tool-search), [compaction](https://developers.openai.com/api/docs/guides/compaction), and `phase` handling for manually replayed assistant items.
+
+See the [GPT-5.5 Prompting Guide](https://developers.openai.com/api/docs/guides/prompt-guidance?model=gpt-5.5) for examples of successful prompting patterns.
+
+## What's new
+
+- **More efficient reasoning:** GPT-5.5 reaches strong results with fewer reasoning tokens than prior models, even at the same reasoning effort. This is especially useful in complex, tool-heavy, or multi-step workflows where token savings compound.
+- **Stronger task execution with outcome-first prompts:** GPT-5.5 is better at working from a clear goal, preserving constraints, and turning product intent into concrete next steps. Describe the expected outcome, success criteria, allowed side effects, evidence rules, and output shape. Avoid step-by-step process guidance unless the exact path matters.
+- **Stronger and more precise tool use:** GPT-5.5 is especially useful on large tool surfaces, multi-step service workflows, and long-running agent tasks. It tends to be more precise in tool selection and argument use.
+- **Tone is often more polished, but can be more direct:** GPT-5.5 often produces warmer, more readable answers with less prompt scaffolding.
+
+## Behavioral changes
+
+1. **Reasoning effort now defaults to `medium`:** GPT-5.5 defaults to `medium` reasoning effort. Treat `medium` as the recommended balanced starting point for quality, reliability, latency, and cost. For latency-sensitive workflows, evaluate `low` before `none` when tool use, planning, search, or multi-step decision making still matters. Reserve `none` for latency-critical tasks that don't need reasoning or multi-chained tool calls, such as lightweight voice turns, fast information retrieval, and classification. Increase to `high` or `xhigh` only when evals show a measurable quality gain that justifies the extra latency and cost. See the [Reasoning models documentation](https://developers.openai.com/api/docs/guides/reasoning) for more details on recommended settings.
+
+   Higher reasoning effort isn't automatically better. If the task has conflicting instructions, weak stopping criteria, or open-ended tool access, higher effort can lead to overthinking, unnecessary searching, or output quality regressions. Increase effort only when evals show a measurable quality gain.
+
+2. **Image inputs preserve more visual detail by default:** GPT-5.5 updates the default handling for image inputs to preserve more visual detail and improve computer use performance. When `image_detail` is unset or set to `auto`, the model now uses `original` behavior, preserving images without resizing up to 10,240,000 pixels or a 6,000-pixel dimension limit. For `high`, specify the value directly; it preserves images without resizing up to 2,500,000 pixels or a 2,048-pixel dimension limit. `low` now focuses on context efficiency and resizes images above a 512-pixel dimension limit more aggressively than previous models. See the [Images and vision documentation](https://developers.openai.com/api/docs/guides/images-vision).
+
+3. **Improved instruction following:** GPT-5.5 interprets prompts in a literal and thorough manner, enabling specific, descriptive instructions when the product requires them. Define success criteria and stopping rules, especially for long-running, tool-heavy, or evidence-gathering workflows. See [Write outcome-first prompts](https://developers.openai.com/api/docs/guides/prompt-guidance?model=gpt-5.5#outcome-first-prompts-and-stopping-conditions) and [Keep the right specificity](https://developers.openai.com/api/docs/guides/prompt-guidance?model=gpt-5.5#formatting).
+
+4. **Default style is more concise and direct:** GPT-5.5 tends to be efficient, direct, and task-oriented by default. This is useful for many production workflows, but customer-facing or conversational experiences may need explicit personality, warmth, rationale, and formatting guidance. Use `text.verbosity` intentionally: `medium` is the default, and `low` is often a better starting point for concise responses. See the [GPT-5.5 prompting guide](https://developers.openai.com/api/docs/guides/prompt-guidance?model=gpt-5.5).
+
+5. **Coding workflows need stronger orchestration:** GPT-5.5 is better suited to complex coding tasks that require planning, tool use, codebase navigation, verification, and multi-step execution. For coding agents, be explicit about reuse, subagent delegation, test expectations, acceptance criteria, and when to continue versus ask for help.
+
+## Migration quickstart
+
+### Automated migration with Codex
+
+Codex can apply the recommended changes in this guide with the [OpenAI Docs Skill](https://github.com/openai/skills/tree/main/skills/.curated/openai-docs).
+
+```text
+$openai-docs migrate this project to gpt-5.5
+```
+
+To use this skill in other coding agents, download it from the [OpenAI skills repository](https://github.com/openai/skills/tree/main/skills/.curated/openai-docs).
+
+### API and model parameters
+
+- Update the model slug to `gpt-5.5`.
+- Use the Responses API for any reasoning, tool-calling, or multi-turn use case.
+- Tune `reasoning.effort`. Use `low` for efficient reasoning, `medium` for a balanced point on the latency/performance curve, `high` for complex agentic tasks that require hard reasoning and where latency matters less, and `xhigh` for the hardest asynchronous agentic tasks or evals that test the bounds of model intelligence. See the [Reasoning models documentation](https://developers.openai.com/api/docs/guides/reasoning).
+- To configure for more concise responses, set `text.verbosity` to `low`. On GPT-5.5, this will result in proportionally more concise responses than `low` verbosity with GPT-5.4.
+- For tool-heavy or long-running workflows, verify that your application handles `phase`, preambles, and assistant-item replay correctly.
+- Benchmark against other models on accuracy, token consumption, and end-to-end latency.
+
+### Prompting
+
+- State the expected outcome and success criteria.
+- Reduce or remove detailed step-by-step process guidance. Let GPT-5.5 choose the path unless the product requires that path.
+- Remove output schema definitions from the prompt where possible. Use [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) instead.
+- Optimize your prompt for caching: [static parts first, dynamic parts last](https://developers.openai.com/api/docs/guides/prompt-caching).
+- Drop the current date. The model is already aware of the current UTC date.
+- Review and optimize your prompts based on the guidance in [Prompting GPT-5.5](https://developers.openai.com/api/docs/guides/prompt-guidance?model=gpt-5.5).
+
+## Using reasoning models
+
+This guidance applies to GPT-5 series models and is worth revisiting whenever teams move workloads onto reasoning models. GPT-5.5 carries forward many capabilities that first appeared in earlier models, but they're still worth reviewing if you are moving from an earlier GPT-5 model, GPT-4.1, or a reasoning model such as o3.
+
+Teams can overlook these features because they sit partly in API configuration and orchestration rather than in the prompt itself. Used together, the Responses API, reasoning controls, verbosity, structured outputs, prompt caching, tool design, hosted tools, and state management help reasoning models deliver their best intelligence, reliability, latency, and cost profile.
+
+- **Responses API:** GPT-5.5 works best in the [Responses API](https://developers.openai.com/api/docs/guides/migrate-to-responses). Use `previous_response_id` for multi-turn state handling. For stateless or Zero Data Retention flows, pass back the relevant returned output items each turn. See [Passing context from the previous response](https://developers.openai.com/api/docs/guides/conversation-state#passing-context-from-the-previous-response) for details.
+- **Reasoning effort:** Use `reasoning.effort` to choose between `low`, `medium`, `high`, or `xhigh`. The default is `medium`, but many workloads will perform well with `low`. Reserve `none` for use cases where low latency is more important than intelligence. See [Reasoning Models](https://developers.openai.com/api/docs/guides/reasoning) for detailed recommendations.
+- **Verbosity:** Use `text.verbosity` to control output length. Treat final answer length as separate from reasoning quality; specify word budgets, section counts, table widths, or JSON-only output where needed.
+- **Structured Outputs:** Avoid describing the expected output schema in the prompt. Use [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) for automatic validation and increased accuracy.
+- **Prompt caching:** [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching) works automatically for eligible long prompts and can reduce latency and input-token cost. To maximize cache hits, keep stable content at the beginning of the request. Put dynamic user-specific context near the end. For repeated traffic with common prefixes, use `prompt_cache_key` consistently and track `usage.prompt_tokens_details.cached_tokens`.
+- **Tool calling:** GPT-5.5 supports the same tool-calling patterns as GPT-5.4, including function tools and tool-heavy agent workflows. Put most tool-specific guidance in the tool descriptions themselves: what the tool does, when to use it, required inputs, side effects, retry safety, and common error modes. Add tool-specific context to system instructions only when it applies across tools or materially changes the agent's operating policy.
+- **Hosted tools and tool search:** Prefer [OpenAI-hosted tools](https://developers.openai.com/api/docs/guides/tools) where they fit the workflow, such as web search, file search, code interpreter, image generation, and computer use. Hosted tools reduce custom orchestration burden and keep common tool patterns aligned with the Responses API and Agents SDK. Use custom function tools when you need to call your own systems, enforce domain-specific side effects, or expose internal business workflows. For large tool catalogs, consider using [tool search](https://developers.openai.com/api/docs/guides/tools-tool-search) to defer tool definitions and load only the relevant subset.
+- **Tool preambles:** Preambles can improve chat UX because the user sees an initial, useful status update before the model generates the final response. They also make tool use easier to follow: the model can state what it's about to check or do, then continue from that same assistant state after tool results arrive.
+- **`phase` handling:** If your application manually manages Responses state by passing output items back each turn instead of using `previous_response_id`, preserve the `phase` parameter on returned assistant output items and pass it back unchanged. This is especially important when using reasoning effort, preambles, or repeated tool calls. See [Phase parameter](https://developers.openai.com/api/docs/guides/reasoning#phase-parameter).
+- **Compaction:** For long-running agents, use [conversation/state compaction](https://developers.openai.com/api/docs/guides/compaction) intentionally. Preserve completed actions, active assumptions, IDs, tool outcomes, unresolved blockers, and the next concrete goal.
+- **Agents SDK:** For new agentic systems, use the latest [Agents SDK](https://developers.openai.com/api/docs/guides/agents) patterns for tool orchestration, tracing, handoffs, and state management rather than rebuilding orchestration from scratch.
+- **Current date:** GPT-5.5 is aware of the current date in UTC. You don't need to add the current date to system instructions. Add explicit date or timezone context only when the application needs a business-specific timezone, policy-effective date, user-local date, or other non-UTC reference point.
+
+
+
+# Reasoning models
+
+import {
+  Question,
+  Storage,
+} from "@components/react/oai/platform/ui/Icon.react";
+
+
+
+
+
+
+
+
+**Reasoning models** like [GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5) use internal reasoning tokens before producing a response. This helps the model plan, use tools effectively, inspect alternatives, recover from ambiguity, and solve harder multi-step tasks. Reasoning models work especially well for complex problem solving, coding, scientific reasoning, and multi-step agentic workflows. They're also the best models for [Codex CLI](https://github.com/openai/codex), our lightweight coding agent.
+
+Start with `gpt-5.5` for most reasoning workloads. If you need the highest-intelligence API option for more challenging problems that can tolerate more latency, use [`gpt-5.5-pro`](https://developers.openai.com/api/docs/models/gpt-5.5-pro). For lower cost, consider `gpt-5.4` and for lower cost and latency, consider `gpt-5.4-mini`.
+
+**Reasoning models work better with the [Responses
+  API](https://developers.openai.com/api/docs/guides/migrate-to-responses)**. While the Chat Completions API
+  is still supported, you'll get improved model intelligence and performance by
+  using Responses.
+
+## Get started with reasoning
+
+Call the [Responses API](https://developers.openai.com/api/docs/api-reference/responses/create) and specify your reasoning model and reasoning effort:
+
+Using a reasoning model in the Responses API
+
+```javascript
+import OpenAI from "openai";
+
+const openai = new OpenAI();
+
+const prompt = \`
+Write a bash script that takes a matrix represented as a string with 
+format '[1,2],[3,4],[5,6]' and prints the transpose in the same format.
+\`;
+
+const response = await openai.responses.create({
+    model: "gpt-5.5",
+    reasoning: { effort: "low" },
+    input: [
+        {
+            role: "user",
+            content: prompt,
+        },
+    ],
+});
+
+console.log(response.output_text);
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI()
+
+prompt = """
+Write a bash script that takes a matrix represented as a string with 
+format '[1,2],[3,4],[5,6]' and prints the transpose in the same format.
+"""
+
+response = client.responses.create(
+    model="gpt-5.5",
+    reasoning={"effort": "low"},
+    input=[
+        {
+            "role": "user", 
+            "content": prompt
+        }
+    ]
+)
+
+print(response.output_text)
+```
+
+```bash
+curl https://api.openai.com/v1/responses \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $OPENAI_API_KEY" \\
+  -d '{
+    "model": "gpt-5.5",
+    "reasoning": {"effort": "low"},
+    "input": [
+      {
+        "role": "user",
+        "content": "Write a bash script that takes a matrix represented as a string with format \\"[1,2],[3,4],[5,6]\\" and prints the transpose in the same format."
+      }
+    ]
+  }'
+```
+
+
+## Reasoning effort
+
+The `reasoning.effort` parameter guides the model on how much to think when performing a task.
+
+Supported values are model-dependent and can include `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Lower effort favors speed and lower token usage, while at higher effort the model thinks more completely to provide higher quality responses. The models also reason adaptively across reasoning efforts, using fewer tokens for simpler tasks and thinking harder for complex tasks.
+
+Defaults are also model-dependent rather than universal. `gpt-5.5` defaults to `medium` reasoning effort. This is the best starting point for `gpt-5.5`’s full balance of quality, reliability and performance.
+
+| Effort   | Best for...                                                                                                                                                                                                                                                                                                                                                          |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `none`   | Latency-critical tasks that do not benefit from any reasoning or multi-chained tool calls. For latency-sensitive use cases with `gpt-5.5`, we recommend trying `low` to begin with and then moving to `none` if required.<br /><br />Common use cases include voice, fast information retrieval, and classification.                                                 |
+| `low`    | Efficient reasoning with a modest latency increase. Ideal for use cases requiring tool-use, planning, search, or multi-step decision making, while optimizing for speed and cost.<br /><br />Common use cases include data analysis, drafting, execution-oriented coding, and customer support / chat assistant workflows.                                           |
+| `medium` | When quality and reliability matter, and the task involves planning, complex reasoning, and judgement. Default configuration for most workloads, and a well-balanced point on the pareto curve of latency, performance and cost.<br /><br />Common use cases include agentic coding, research, working with spreadsheets & slides, and delegating long-horizon work. |
+| `high`   | Hard reasoning, complex debugging, deep planning, and high-value tasks where quality and intelligence matters more than latency. Recommended for complex workflows and agentic tasks.<br /><br />Common use cases include agentic coding, long-horizon research, and knowledge work. Depending on the complexity of the task, evaluate both `medium` and `high`.     |
+| `xhigh`  | Deep research, asynchronous workflows and agentic tasks that require very long rollouts. Only use when your evals show a clear benefit that justifies the extra latency and cost.<br /><br />Common use cases include security and code review, enterprise productivity, deeper research tasks, and challenging coding workflows.                                    |
+
+For faster time to first visible token in latency-sensitive applications, ask the model to generate a short preamble before continuing with deeper reasoning.
+
+Some models support only a subset of these values, so check the relevant [model page](https://developers.openai.com/api/docs/models) before choosing a setting.
+
+## How reasoning works
+
+Reasoning models introduce **reasoning tokens** in addition to input and output tokens. The models use these reasoning tokens to "think," breaking down the prompt and considering multiple approaches to generating a response. Our reasoning models like gpt-5.5 and gpt-5.4 support interleaved thinking, where the model is able to generate visible output tokens before and in between thinking, and is able to think in between tool calls.
+
+Here is an example of a multi-step conversation between a user and an assistant. Input and output tokens from each step are carried over, while reasoning tokens are discarded.
+
+![Reasoning tokens aren't retained in context](https://cdn.openai.com/API/docs/images/context-window.png)
+
+While reasoning tokens are not visible via the API, they still occupy space in
+  the model's context window and are billed as [output
+  tokens](https://openai.com/api/pricing).
+
+### Managing the context window
+
+It's important to ensure there's enough space in the context window for reasoning tokens when creating responses. Depending on the problem's complexity, the models may generate anywhere from a few hundred to tens of thousands of reasoning tokens. The exact number of reasoning tokens used is visible in the [usage object of the response object](https://developers.openai.com/api/docs/api-reference/responses/object), under `output_tokens_details`:
+
+```json
+{
+  "usage": {
+    "input_tokens": 75,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 1186,
+    "output_tokens_details": {
+      "reasoning_tokens": 1024
+    },
+    "total_tokens": 1261
+  }
+}
+```
+
+Context window lengths are found on the [model reference page](https://developers.openai.com/api/docs/models), and will differ across model snapshots.
+
+### Controlling costs
+
+To manage costs with reasoning models, you can limit the total number of tokens the
+model generates (including both reasoning and final output tokens) by using the
+[`max_output_tokens`](https://developers.openai.com/api/docs/api-reference/responses/create#responses-create-max_output_tokens)
+parameter.
+
+### Allocating space for reasoning
+
+If the generated tokens reach the context window limit or the `max_output_tokens` value you've set, you'll receive a response with a `status` of `incomplete` and `incomplete_details` with `reason` set to `max_output_tokens`. This might occur before any visible output tokens are produced, meaning you could incur costs for input and reasoning tokens without receiving a visible response.
+
+To prevent this, ensure there's sufficient space in the context window or adjust the `max_output_tokens` value to a higher number. OpenAI recommends reserving at least 25,000 tokens for reasoning and outputs when you start experimenting with these models. As you become familiar with the number of reasoning tokens your prompts require, you can adjust this buffer accordingly.
+
+Handling incomplete responses
+
+```javascript
+import OpenAI from "openai";
+
+const openai = new OpenAI();
+
+const prompt = \`
+Write a bash script that takes a matrix represented as a string with 
+format '[1,2],[3,4],[5,6]' and prints the transpose in the same format.
+\`;
+
+const response = await openai.responses.create({
+    model: "gpt-5.5",
+    reasoning: { effort: "medium" },
+    input: [
+        {
+            role: "user",
+            content: prompt,
+        },
+    ],
+    max_output_tokens: 300,
+});
+
+if (
+    response.status === "incomplete" &&
+    response.incomplete_details.reason === "max_output_tokens"
+) {
+    console.log("Ran out of tokens");
+    if (response.output_text?.length > 0) {
+        console.log("Partial output:", response.output_text);
+    } else {
+        console.log("Ran out of tokens during reasoning");
+    }
+}
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI()
+
+prompt = """
+Write a bash script that takes a matrix represented as a string with 
+format '[1,2],[3,4],[5,6]' and prints the transpose in the same format.
+"""
+
+response = client.responses.create(
+    model="gpt-5.5",
+    reasoning={"effort": "medium"},
+    input=[
+        {
+            "role": "user", 
+            "content": prompt
+        }
+    ],
+    max_output_tokens=300,
+)
+
+if response.status == "incomplete" and response.incomplete_details.reason == "max_output_tokens":
+    print("Ran out of tokens")
+    if response.output_text:
+        print("Partial output:", response.output_text)
+    else: 
+        print("Ran out of tokens during reasoning")
+```
+
+
+### Keeping reasoning items in context
+
+When doing [function calling](https://developers.openai.com/api/docs/guides/function-calling) with a reasoning model in the [Responses API](https://developers.openai.com/api/docs/api-reference/responses), we highly recommend you pass back any reasoning items returned with the last function call (in addition to the output of your function). If the model calls multiple functions consecutively, you should pass back all reasoning items, function call items, and function call output items, since the last `user` message. This allows the model to continue its reasoning process to produce better results in the most token-efficient manner.
+
+The simplest way to do this is to pass in all reasoning items from a previous response into the next one. Our systems will smartly ignore any reasoning items that aren't relevant to your functions, and only retain those in context that are relevant. You can pass reasoning items from previous responses either using the `previous_response_id` parameter, or by manually passing in all the [output](https://developers.openai.com/api/docs/api-reference/responses/object#responses/object-output) items from a past response into the [input](https://developers.openai.com/api/docs/api-reference/responses/create#responses-create-input) of a new one.
+
+For advanced use cases where you might be truncating and optimizing parts of the context window before passing them on to the next response, just ensure all items between the last user message and your function call output are passed into the next response untouched. This will ensure that the model has all the context it needs.
+
+Check out [this guide](https://developers.openai.com/api/docs/guides/conversation-state) to learn more about manual context management.
+
+### Encrypted reasoning items
+
+When using the Responses API in a stateless mode (either with `store` set to `false`, or when an organization is enrolled in zero data retention), you must still retain reasoning items across conversation turns using the techniques described above. But in order to have reasoning items that can be sent with subsequent API requests, each of your API requests must have `reasoning.encrypted_content` in the `include` parameter of API requests, like so:
+
+```bash
+curl https://api.openai.com/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -d '{
+    "model": "gpt-5.5",
+    "reasoning": {"effort": "medium"},
+    "input": "What is the weather like today?",
+    "tools": [ ... function config here ... ],
+    "include": [ "reasoning.encrypted_content" ]
+  }'
+```
+
+Any reasoning items in the `output` array will now have an `encrypted_content` property, which will contain encrypted reasoning tokens that can be passed along with future conversation turns.
+
+## Reasoning summaries
+
+While we don't expose the raw reasoning tokens emitted by the model, you can view a summary of the model's reasoning using the `summary` parameter. See our [model documentation](https://developers.openai.com/api/docs/models) to check which reasoning models support summaries.
+
+Different models support different reasoning summary settings. For example, our computer use model supports the `concise` summarizer, while o4-mini supports `detailed`. To access the most detailed summarizer available for a model, set the value of this parameter to `auto`. `auto` will be equivalent to `detailed` for most reasoning models today, but there may be more granular settings in the future.
+
+Reasoning summary output is part of the `summary` array in the `reasoning` [output item](https://developers.openai.com/api/docs/api-reference/responses/object#responses/object-output). This output will not be included unless you explicitly opt in to including reasoning summaries.
+
+The example below shows how to make an API request that includes a reasoning summary.
+
+Include a reasoning summary with the API response
+
+```javascript
+import OpenAI from "openai";
+const openai = new OpenAI();
+
+const response = await openai.responses.create({
+  model: "gpt-5.5",
+  input: "What is the capital of France?",
+  reasoning: {
+    effort: "low",
+    summary: "auto",
+  },
+});
+
+console.log(response.output);
+```
+
+```python
+from openai import OpenAI
+client = OpenAI()
+
+response = client.responses.create(
+    model="gpt-5.5",
+    input="What is the capital of France?",
+    reasoning={
+        "effort": "low",
+        "summary": "auto"
+    }
+)
+
+print(response.output)
+```
+
+```bash
+curl https://api.openai.com/v1/responses \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer $OPENAI_API_KEY" \\
+  -d '{
+    "model": "gpt-5.5",
+    "input": "What is the capital of France?",
+    "reasoning": {
+        "effort": "low",
+        "summary": "auto"
+    }
+  }'
+```
+
+
+This API request will return an output array with both an assistant message and a summary of the model's reasoning in generating that response.
+
+```json
+[
+  {
+    "id": "rs_6876cf02e0bc8192b74af0fb64b715ff06fa2fcced15a5ac",
+    "type": "reasoning",
+    "summary": [
+      {
+        "type": "summary_text",
+        "text": "**Answering a simple question**\n\nI\u2019m looking at a straightforward question: the capital of France is Paris. It\u2019s a well-known fact, and I want to keep it brief and to the point. Paris is known for its history, art, and culture, so it might be nice to add just a hint of that charm. But mostly, I\u2019ll aim to focus on delivering a clear and direct answer, ensuring the user gets what they\u2019re looking for without any extra fluff."
+      }
+    ]
+  },
+  {
+    "id": "msg_6876cf054f58819284ecc1058131305506fa2fcced15a5ac",
+    "type": "message",
+    "status": "completed",
+    "content": [
+      {
+        "type": "output_text",
+        "annotations": [],
+        "logprobs": [],
+        "text": "The capital of France is Paris."
+      }
+    ],
+    "role": "assistant"
+  }
+]
+```
+
+Before using summarizers with our latest reasoning models, you may need to
+  complete [organization
+  verification](https://help.openai.com/en/articles/10910291-api-organization-verification)
+  to ensure safe deployment. Get started with verification on the [platform
+  settings page](https://platform.openai.com/settings/organization/general).
+
+## `phase` parameter
+
+For long-running or tool-heavy flows with GPT-5.5 and GPT-5.4 in the Responses API, use the assistant message `phase` field to avoid early stopping and other misbehavior.
+`phase` is optional at the API level, but OpenAI recommends using it. Use `phase: "commentary"` for intermediate assistant updates, such as preambles before tool calls, and `phase: "final_answer"` for the completed answer. Don't add `phase` to user messages.
+Using `previous_response_id` is usually the simplest path because prior assistant state is preserved. If you replay assistant history manually, preserve each original `phase` value.
+Missing or dropped `phase` can cause preambles to be treated as final answers in those workflows. For model-specific prompt guidance, see [Prompting GPT-5.5](https://developers.openai.com/api/docs/guides/prompt-guidance?model=gpt-5.5#phase-parameter).
+
+### Round-trip assistant phase values
+
+## Advice on prompting
+
+There are some differences to consider when prompting a reasoning model. Reasoning-capable GPT-5 models usually work best when you give them a clear goal, strong constraints, and an explicit output contract without prescribing every intermediate step.
+
+- Give the model the task, constraints, and desired output format.
+- Treat `reasoning.effort` as a tuning knob, not the primary way to recover quality.
+- For agentic or research-heavy workflows, define what counts as done and how the model should verify its work.
+
+For more information on best practices when using reasoning models, [refer to this guide](https://developers.openai.com/api/docs/guides/reasoning-best-practices).
+
+### Prompt examples
+
+
+
+<div data-content-switcher-pane data-value="refactoring">
+    <div class="hidden">Coding (refactoring)</div>
+    </div>
+  <div data-content-switcher-pane data-value="planning" hidden>
+    <div class="hidden">Coding (planning)</div>
+    </div>
+  <div data-content-switcher-pane data-value="research" hidden>
+    <div class="hidden">STEM Research</div>
+    </div>
+
+
+
+## Use case examples
+
+Some examples of using reasoning models for real-world use cases can be found in [the cookbook](https://developers.openai.com/cookbook).
+
+<a
+  href="https://cookbook.openai.com/examples/o1/using_reasoning_for_data_validation"
+  target="_blank"
+  rel="noreferrer"
+>
+  
+
+<span slot="icon">
+      </span>
+    Evaluate a synthetic medical data set for discrepancies.
+
+
+</a>
+
+<a
+  href="https://cookbook.openai.com/examples/o1/using_reasoning_for_routine_generation"
+  target="_blank"
+  rel="noreferrer"
+>
+  
+
+<span slot="icon">
+      </span>
+    Use help center articles to generate actions that an agent could perform.
+
+
+</a>

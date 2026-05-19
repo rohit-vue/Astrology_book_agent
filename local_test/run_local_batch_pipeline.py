@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 Local end-to-end book generation pipeline (BATCH API variant).
-Uses the OpenAI Batch API for chapter text generation (50% cheaper, higher rate limits).
-Images are still generated synchronously after batch text results arrive.
+Uses the OpenAI Batch API for chapter text via /v1/responses (GPT-5.5 reasoning + verbosity;
+see repo gpt-5.5-doc.txt). Images use Batch /v1/images/generations (gpt-image-2).
 
 Pipeline steps:
   1. Fetch astrology data (astrologyapi.com)
-  2. Architect book structure (OpenAI)
-  3a. Submit chapter text requests as a Batch job (OpenAI Batch API)
+  2. Architect book structure (OpenAI Responses API, GPT-5.5)
+  3a. Submit chapter text requests as a Batch job (OpenAI Batch API, endpoint /v1/responses)
   3b. Poll until batch completes, then collect chapter texts
-  3c. Generate chapter images synchronously (gpt-image-1-mini)
+  3c. Generate chapter images via Batch API
   4. Generate PDF (book_pdf_exporter.py)
 
 Usage:
@@ -18,7 +18,6 @@ Usage:
 """
 import sys
 import os
-import io
 import json
 import asyncio
 import time
@@ -40,16 +39,37 @@ ASTRO_WESTERN_KEY = os.environ["ASTROLOGY_WESTERN_API_KEY"]
 ASTRO_VEDIC_UID = os.environ["ASTROLOGY_VEDIC_USER_ID"]
 ASTRO_VEDIC_KEY = os.environ["ASTROLOGY_VEDIC_API_KEY"]
 
-MODEL_TEXT = "gpt-5.2-2025-12-11"
-MODEL_IMAGE = "gpt-image-1.5"
-MODEL_STABLE = "gpt-4o"
+# GPT-5.5 for local batch test (Responses API; reasoning + text.verbosity per gpt-5.5-doc.txt)
+MODEL_CONTENT = "gpt-5.5"
+MODEL_IMAGE = "gpt-image-2"
+
+# Chapter batch: high reasoning + high verbosity; reserve headroom for reasoning + ~10k-word prose
+REASONING_EFFORT_CHAPTER = "high"
+TEXT_VERBOSITY_CHAPTER = "high"
+CHAPTER_MAX_OUTPUT_TOKENS = 48000
+
+# Architect / long prose (sync Responses)
+REASONING_EFFORT_ARCHITECT = "high"
+TEXT_VERBOSITY_ARCHITECT = "high"
+ARCHITECT_MAX_OUTPUT_TOKENS = 16000
+
+# Style profile (structured JSON — keep reasoning moderate, text less verbose)
+REASONING_EFFORT_STYLE = "medium"
+TEXT_VERBOSITY_STYLE = "low"
+STYLE_MAX_OUTPUT_TOKENS = 600
+
+# Preface / prologue / epilogue (GPT-5.5, same depth settings as architect)
+SECTION_MAX_OUTPUT_TOKENS = 1000
+IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = 200
 
 BATCH_POLL_INTERVAL = 15  # seconds between status checks
-CHAPTER_WORD_TARGET = 10000
-CHAPTER_WORD_MIN = 9000
-CHAPTER_WORD_MAX = 10500
-CHAPTER_MAX_COMPLETION_TOKENS = 12000
+BOOK_WORD_TARGET = 50000
+CHAPTER_WORD_TARGET = 7750
+CHAPTER_WORD_MIN = 7500
+CHAPTER_WORD_MAX = 8000
 MAX_BATCH_RETRIES = 1
+
+BATCH_ENDPOINT_RESPONSES = "/v1/responses"
 
 OUTPUT_DIR = "/app/output"
 ARTIFACTS_DIR = os.path.join(OUTPUT_DIR, "artifacts")
@@ -69,9 +89,9 @@ The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE
 **TASK:**
 Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
 
-**RULES FOR THE MAIN BOOK TITLE AND CHAPTER TITLES:**
-- Maximum 70 total characters INCLUDING spaces.
-- Prefer Maximum 10-11 words total for the book title.
+    **RULES FOR THE MAIN BOOK TITLE AND CHAPTER TITLES:**
+    - Maximum 70 total characters INCLUDING spaces.
+    - Prefer Maximum 10-11 words total for the book title.
 
 **STRUCTURE RULES:**
 You must generate a book outline with EXACTLY 7 CHAPTERS.
@@ -107,6 +127,42 @@ Your entire response MUST be a single, valid JSON object.
 __ASTROLOGY_DATA__"""
 
 IMAGE_PROMPT_TEMPLATE = "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
+
+
+# ---------------------------------------------------------------------------
+# GPT-5.5 /v1/responses helpers (sync, async, and Batch output bodies)
+# ---------------------------------------------------------------------------
+
+def _extract_text_from_responses_body_dict(body: dict) -> str:
+    """Parse visible text from a serialized Response object (e.g. Batch output `body`)."""
+    if not isinstance(body, dict):
+        return ""
+    ot = body.get("output_text")
+    if isinstance(ot, str) and ot.strip():
+        return ot.strip()
+    chunks = []
+    for item in body.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for part in item.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "output_text":
+                t = part.get("text") or ""
+                if t:
+                    chunks.append(t)
+    return "".join(chunks).strip()
+
+
+def _response_text_from_obj(resp) -> str:
+    """Readable text from a Responses API result object (OpenAI Python SDK)."""
+    tx = getattr(resp, "output_text", None)
+    if isinstance(tx, str) and tx.strip():
+        return tx.strip()
+    md = getattr(resp, "model_dump", None)
+    if callable(md):
+        d = md()
+        if isinstance(d, dict):
+            return _extract_text_from_responses_body_dict(d)
+    return ""
 
 
 # ===========================================================================
@@ -175,7 +231,7 @@ def fetch_astrology(birth_data, order_id):
 
 
 # ===========================================================================
-# STEP 2: Architect Book Structure  (unchanged)
+# STEP 2: Architect Book Structure (GPT-5.5 Responses API)
 # ===========================================================================
 
 def architect_book(astrology_data, focus, language):
@@ -192,18 +248,25 @@ def architect_book(astrology_data, focus, language):
     )
 
     client = OpenAI(api_key=OPENAI_API_KEY)
-    print("  Calling OpenAI to architect book structure...")
-    resp = client.chat.completions.create(
-        model=MODEL_TEXT,
-        messages=[
+    print("  Calling OpenAI Responses API (gpt-5.5, reasoning=high, verbosity=high)...")
+    resp = client.responses.create(
+        model=MODEL_CONTENT,
+        input=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        response_format={"type": "json_object"},
-        temperature=0.3,
+        text={
+            "format": {"type": "json_object"},
+            "verbosity": TEXT_VERBOSITY_ARCHITECT,
+        },
+        reasoning={"effort": REASONING_EFFORT_ARCHITECT},
+        max_output_tokens=ARCHITECT_MAX_OUTPUT_TOKENS,
     )
 
-    structure = json.loads(resp.choices[0].message.content)
+    raw = _response_text_from_obj(resp)
+    if getattr(resp, "status", None) == "incomplete":
+        print(f"  WARNING: Architect response incomplete: {getattr(resp, 'incomplete_details', None)}")
+    structure = json.loads(raw)
     chapters = structure.get("structure", {}).get("chapters", [])
     print(f"  Generated structure with {len(chapters)} chapters.")
 
@@ -240,7 +303,8 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"**Style:** {style}\n"
             f"**Focus:** {focus}\n"
             f"**Summary:** {description}\n"
-            f"**Word Contract:** Target {word_target} words. Mandatory range {CHAPTER_WORD_MIN}-{CHAPTER_WORD_MAX} words.\n"
+            f"**Book Contract:** The complete book targets ~{BOOK_WORD_TARGET} words total across all chapters.\n"
+            f"**Word Contract:** Target {word_target} words for this chapter. Mandatory range {CHAPTER_WORD_MIN}-{CHAPTER_WORD_MAX} words.\n"
             f"**Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.\n"
             f"**Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, "
             f"(5) shadow expression, (6) reframing, (7) practical integration prompts.\n"
@@ -261,14 +325,16 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
         task = {
             "custom_id": custom_id,
             "method": "POST",
-            "url": "/v1/chat/completions",
+            "url": BATCH_ENDPOINT_RESPONSES,
             "body": {
-                "model": MODEL_TEXT,
-                "temperature": 0.5,
-                "max_completion_tokens": CHAPTER_MAX_COMPLETION_TOKENS,
-                "messages": [
-                    {"role": "user", "content": prompt},
-                ],
+                "model": MODEL_CONTENT,
+                "input": [{"role": "user", "content": prompt}],
+                "reasoning": {"effort": REASONING_EFFORT_CHAPTER},
+                "text": {
+                    "format": {"type": "text"},
+                    "verbosity": TEXT_VERBOSITY_CHAPTER,
+                },
+                "max_output_tokens": CHAPTER_MAX_OUTPUT_TOKENS,
             },
         }
         tasks.append(task)
@@ -276,7 +342,7 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
 
         print(f"    Task '{custom_id}': Chapter {chapter_num} - {title}")
         print(f"      Prompt length: {len(prompt):,} chars")
-        print(f"      Completion budget: {CHAPTER_MAX_COMPLETION_TOKENS} max tokens")
+        print(f"      max_output_tokens: {CHAPTER_MAX_OUTPUT_TOKENS} (reasoning={REASONING_EFFORT_CHAPTER}, verbosity={TEXT_VERBOSITY_CHAPTER})")
 
     print(f"\n  BATCH: {len(tasks)} chapter tasks built.")
     return tasks, manifest
@@ -455,16 +521,37 @@ def collect_chapter_batch_results(client, batch, manifest, artifact_prefix="chap
             continue
 
         body = response["body"]
-        print(f"    Model:         {body.get('model')}")
-        print(f"    Finish reason: {body['choices'][0].get('finish_reason')}")
+        print(f"    Model:           {body.get('model')}")
+        print(f"    Response status: {body.get('status')}")
+        if body.get("status") == "incomplete":
+            print(f"    Incomplete:      {body.get('incomplete_details')}")
 
-        usage = body.get("usage", {})
-        print(f"    Tokens -> prompt: {usage.get('prompt_tokens', '?')}  "
-              f"completion: {usage.get('completion_tokens', '?')}  "
-              f"total: {usage.get('total_tokens', '?')}")
+        usage = body.get("usage", {}) or {}
+        if "input_tokens" in usage or "output_tokens" in usage:
+            print(
+                f"    Tokens -> input: {usage.get('input_tokens', '?')}  "
+                f"output: {usage.get('output_tokens', '?')}  "
+                f"total: {usage.get('total_tokens', '?')}"
+            )
+            otd = usage.get("output_tokens_details") or {}
+            if otd.get("reasoning_tokens") is not None:
+                print(f"              reasoning (output token detail): {otd.get('reasoning_tokens')}")
+        else:
+            print(
+                f"    Tokens -> prompt: {usage.get('prompt_tokens', '?')}  "
+                f"completion: {usage.get('completion_tokens', '?')}  "
+                f"total: {usage.get('total_tokens', '?')}"
+            )
 
-        chapter_text = body["choices"][0]["message"]["content"].strip()
-        print(f"    Text length:   {len(chapter_text):,} chars")
+        chapter_text = _extract_text_from_responses_body_dict(body)
+        if not chapter_text and isinstance(body, dict) and body.get("choices"):
+            # Fallback: legacy chat.completions batch line shape
+            try:
+                chapter_text = (body["choices"][0]["message"]["content"] or "").strip()
+            except (KeyError, IndexError, TypeError):
+                chapter_text = ""
+
+        print(f"    Text length:     {len(chapter_text):,} chars")
 
         if not chapter_text:
             print("    ERROR: Empty chapter text")
@@ -536,12 +623,14 @@ async def build_image_batch_tasks(async_client, chapters_data):
 
         summary = text[:700]
         try:
-            sum_resp = await async_client.chat.completions.create(
-                model=MODEL_TEXT,
-                messages=[{"role": "user", "content": f"Summarize text for image: {text[:1200]}"}],
-                max_completion_tokens=120,
+            sum_resp = await async_client.responses.create(
+                model=MODEL_CONTENT,
+                input=[{"role": "user", "content": f"Summarize text for image: {text[:1200]}"}],
+                text={"format": {"type": "text"}, "verbosity": "low"},
+                reasoning={"effort": "low"},
+                max_output_tokens=IMAGE_SUMMARY_MAX_OUTPUT_TOKENS,
             )
-            summary = sum_resp.choices[0].message.content.strip()
+            summary = _response_text_from_obj(sum_resp).strip()
         except Exception as e:
             print(f"    WARNING: Summary generation failed for chapter {idx}, using fallback excerpt. Error: {e}")
 
@@ -759,13 +848,14 @@ async def generate_section(client, name, description, style, language):
     - Second person POV ("You").
     """
     try:
-        resp = await client.chat.completions.create(
-            model=MODEL_STABLE,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=800,
+        resp = await client.responses.create(
+            model=MODEL_CONTENT,
+            input=[{"role": "user", "content": prompt}],
+            text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_ARCHITECT},
+            reasoning={"effort": REASONING_EFFORT_ARCHITECT},
+            max_output_tokens=SECTION_MAX_OUTPUT_TOKENS,
         )
-        text = resp.choices[0].message.content.strip()
+        text = _response_text_from_obj(resp).strip()
         print(f"  {name} done: {len(text)} chars")
         return text
     except Exception as e:
@@ -779,7 +869,7 @@ async def generate_section(client, name, description, style, language):
 
 async def write_chapters(astrology_data, structure, focus, language):
     print("\n" + "=" * 60)
-    print("STEP 3: Writing Chapters (Batch API) + Generating Images")
+    print("STEP 3: Writing Chapters (Batch /v1/responses, GPT-5.5) + Images (Batch)")
     print("=" * 60)
 
     async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -788,9 +878,9 @@ async def write_chapters(astrology_data, structure, focus, language):
     # --- Style analysis (short + chart-aware + structured output) ---
     style_chart = build_style_chart_snapshot(astrology_data)
     try:
-        style_resp = await async_client.chat.completions.create(
-            model=MODEL_TEXT,
-            messages=[{
+        style_resp = await async_client.responses.create(
+            model=MODEL_CONTENT,
+            input=[{
                 "role": "user",
                 "content": (
                     f"Generate a concise writing style profile for a personal astrology book.\n"
@@ -806,10 +896,11 @@ async def write_chapters(astrology_data, structure, focus, language):
                     "Do not add any text outside JSON."
                 )
             }],
-            response_format={"type": "json_object"},
-            max_completion_tokens=300,
+            text={"format": {"type": "json_object"}, "verbosity": TEXT_VERBOSITY_STYLE},
+            reasoning={"effort": REASONING_EFFORT_STYLE},
+            max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
         )
-        style_json = json.loads(style_resp.choices[0].message.content)
+        style_json = json.loads(_response_text_from_obj(style_resp))
         tone = (style_json.get("tone") or "").strip()
         rules = [r.strip() for r in style_json.get("voice_rules", []) if isinstance(r, str) and r.strip()]
         avoids = [a.strip() for a in style_json.get("avoid", []) if isinstance(a, str) and a.strip()]
@@ -856,7 +947,13 @@ async def write_chapters(astrology_data, structure, focus, language):
         chapters_list, astrology_data, focus, style, language, word_target,
     )
 
-    batch_id = submit_chapter_batch(sync_client, tasks, manifest, artifact_prefix="chapter_text")
+    batch_id = submit_chapter_batch(
+        sync_client,
+        tasks,
+        manifest,
+        artifact_prefix="chapter_text",
+        endpoint=BATCH_ENDPOINT_RESPONSES,
+    )
     batch = poll_batch_until_done(sync_client, batch_id)
 
     if batch.status != "completed":
@@ -890,6 +987,7 @@ async def write_chapters(astrology_data, structure, focus, language):
             retry_tasks,
             manifest,
             artifact_prefix=f"chapter_text_retry_{retry_num}",
+            endpoint=BATCH_ENDPOINT_RESPONSES,
         )
         retry_batch = poll_batch_until_done(sync_client, retry_batch_id)
 

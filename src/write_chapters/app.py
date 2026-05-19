@@ -16,21 +16,84 @@ sync_openai_client = OpenAI(api_key="dummy")
 
 API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
 ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET")
-MODEL_TEXT = "gpt-5.2-2025-12-11"
-MODEL_IMAGE = "gpt-image-1.5"
-MODEL_STABLE = "gpt-4o"
 
-BATCH_POLL_INTERVAL = 15
-CHAPTER_WORD_TARGET = 10000
-CHAPTER_WORD_MIN = 9000
-CHAPTER_WORD_MAX = 10500
-CHAPTER_MAX_COMPLETION_TOKENS = 12000
-MAX_BATCH_RETRIES = 1
+
+def _env_str(key: str, default: str) -> str:
+    val = os.environ.get(key)
+    if val is None or not str(val).strip():
+        return default
+    return str(val).strip()
+
+
+def _env_int(key: str, default: int) -> int:
+    val = os.environ.get(key)
+    if val is None or not str(val).strip():
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
+MODEL_CONTENT = _env_str("MODEL_CONTENT", "gpt-5.5")
+MODEL_IMAGE = _env_str("MODEL_IMAGE", "gpt-image-2")
+BATCH_ENDPOINT_RESPONSES = _env_str("BATCH_ENDPOINT_RESPONSES", "/v1/responses")
+
+REASONING_EFFORT_CHAPTER = _env_str("REASONING_EFFORT_CHAPTER", "high")
+TEXT_VERBOSITY_CHAPTER = _env_str("TEXT_VERBOSITY_CHAPTER", "high")
+CHAPTER_MAX_OUTPUT_TOKENS = _env_int("CHAPTER_MAX_OUTPUT_TOKENS", 48000)
+
+REASONING_EFFORT_ARCHITECT = _env_str("REASONING_EFFORT_ARCHITECT", "high")
+TEXT_VERBOSITY_ARCHITECT = _env_str("TEXT_VERBOSITY_ARCHITECT", "high")
+
+REASONING_EFFORT_STYLE = _env_str("REASONING_EFFORT_STYLE", "medium")
+TEXT_VERBOSITY_STYLE = _env_str("TEXT_VERBOSITY_STYLE", "low")
+STYLE_MAX_OUTPUT_TOKENS = _env_int("STYLE_MAX_OUTPUT_TOKENS", 600)
+
+SECTION_MAX_OUTPUT_TOKENS = _env_int("SECTION_MAX_OUTPUT_TOKENS", 1000)
+IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = _env_int("IMAGE_SUMMARY_MAX_OUTPUT_TOKENS", 200)
+
+BATCH_POLL_INTERVAL = _env_int("BATCH_POLL_INTERVAL", 15)
+BOOK_WORD_TARGET = _env_int("BOOK_WORD_TARGET", 50000)
+CHAPTER_WORD_TARGET = _env_int("CHAPTER_WORD_TARGET", 7750)
+CHAPTER_WORD_MIN = _env_int("CHAPTER_WORD_MIN", 7500)
+CHAPTER_WORD_MAX = _env_int("CHAPTER_WORD_MAX", 8000)
+MAX_BATCH_RETRIES = _env_int("MAX_BATCH_RETRIES", 1)
 
 IMAGE_PROMPT_FALLBACK = (
     "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. "
     "Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
 )
+
+
+def _extract_text_from_responses_body_dict(body: dict) -> str:
+    if not isinstance(body, dict):
+        return ""
+    ot = body.get("output_text")
+    if isinstance(ot, str) and ot.strip():
+        return ot.strip()
+    chunks = []
+    for item in body.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for part in item.get("content") or []:
+            if isinstance(part, dict) and part.get("type") == "output_text":
+                t = part.get("text") or ""
+                if t:
+                    chunks.append(t)
+    return "".join(chunks).strip()
+
+
+def _response_text_from_obj(resp) -> str:
+    tx = getattr(resp, "output_text", None)
+    if isinstance(tx, str) and tx.strip():
+        return tx.strip()
+    md = getattr(resp, "model_dump", None)
+    if callable(md):
+        d = md()
+        if isinstance(d, dict):
+            return _extract_text_from_responses_body_dict(d)
+    return ""
 
 
 def unwrap_payload(event):
@@ -95,13 +158,14 @@ async def generate_section(name, description, style, language):
     - Second person POV ("You").
     """
     try:
-        resp = await async_openai_client.chat.completions.create(
-            model=MODEL_STABLE,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=800,
+        resp = await async_openai_client.responses.create(
+            model=MODEL_CONTENT,
+            input=[{"role": "user", "content": prompt}],
+            text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_ARCHITECT},
+            reasoning={"effort": REASONING_EFFORT_ARCHITECT},
+            max_output_tokens=SECTION_MAX_OUTPUT_TOKENS,
         )
-        text = resp.choices[0].message.content.strip()
+        text = _response_text_from_obj(resp).strip()
         print(f"✅ {name} SUCCESS: {len(text)} chars")
         return text
     except Exception as e:
@@ -153,7 +217,8 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"**Style:** {style}\n"
             f"**Focus:** {focus}\n"
             f"**Summary:** {description}\n"
-            f"**Word Contract:** Target {word_target} words. Mandatory range {CHAPTER_WORD_MIN}-{CHAPTER_WORD_MAX} words.\n"
+            f"**Book Contract:** The complete book targets ~{BOOK_WORD_TARGET} words total across all chapters.\n"
+            f"**Word Contract:** Target {word_target} words for this chapter. Mandatory range {CHAPTER_WORD_MIN}-{CHAPTER_WORD_MAX} words.\n"
             f"**Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.\n"
             f"**Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, "
             f"(5) shadow expression, (6) reframing, (7) practical integration prompts.\n"
@@ -173,12 +238,16 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             {
                 "custom_id": custom_id,
                 "method": "POST",
-                "url": "/v1/chat/completions",
+                "url": BATCH_ENDPOINT_RESPONSES,
                 "body": {
-                    "model": MODEL_TEXT,
-                    "temperature": 0.5,
-                    "max_completion_tokens": CHAPTER_MAX_COMPLETION_TOKENS,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "model": MODEL_CONTENT,
+                    "input": [{"role": "user", "content": prompt}],
+                    "reasoning": {"effort": REASONING_EFFORT_CHAPTER},
+                    "text": {
+                        "format": {"type": "text"},
+                        "verbosity": TEXT_VERBOSITY_CHAPTER,
+                    },
+                    "max_output_tokens": CHAPTER_MAX_OUTPUT_TOKENS,
                 },
             }
         )
@@ -243,7 +312,13 @@ def collect_chapter_batch_results(client, batch):
         if not response or response.get("status_code") != 200:
             failed_ids.add(custom_id)
             continue
-        chapter_text = response["body"]["choices"][0]["message"]["content"].strip()
+        body = response.get("body") or {}
+        chapter_text = _extract_text_from_responses_body_dict(body)
+        if not chapter_text and isinstance(body, dict) and body.get("choices"):
+            try:
+                chapter_text = (body["choices"][0]["message"]["content"] or "").strip()
+            except (KeyError, IndexError, TypeError):
+                chapter_text = ""
         if not chapter_text:
             failed_ids.add(custom_id)
             continue
@@ -317,12 +392,14 @@ async def build_image_batch_tasks(chapters_data, image_prompt_template):
 
         summary = text[:700]
         try:
-            sum_resp = await async_openai_client.chat.completions.create(
-                model=MODEL_TEXT,
-                messages=[{"role": "user", "content": f"Summarize text for image: {text[:1200]}"}],
-                max_completion_tokens=120,
+            sum_resp = await async_openai_client.responses.create(
+                model=MODEL_CONTENT,
+                input=[{"role": "user", "content": f"Summarize text for image: {text[:1200]}"}],
+                text={"format": {"type": "text"}, "verbosity": "low"},
+                reasoning={"effort": "low"},
+                max_output_tokens=IMAGE_SUMMARY_MAX_OUTPUT_TOKENS,
             )
-            summary = sum_resp.choices[0].message.content.strip()
+            summary = _response_text_from_obj(sum_resp).strip()
         except Exception as e:
             print(f"Image summary fallback for chapter {idx}: {e}")
 
@@ -438,9 +515,9 @@ def configure_openai():
 async def prepare_style_and_sections(chart, structure, focus, language):
     style_chart = build_style_chart_snapshot(chart)
     try:
-        style_resp = await async_openai_client.chat.completions.create(
-            model=MODEL_TEXT,
-            messages=[{
+        style_resp = await async_openai_client.responses.create(
+            model=MODEL_CONTENT,
+            input=[{
                 "role": "user",
                 "content": (
                     f"Generate a concise writing style profile for a personal astrology book.\n"
@@ -456,10 +533,11 @@ async def prepare_style_and_sections(chart, structure, focus, language):
                     "Do not add any text outside JSON."
                 ),
             }],
-            response_format={"type": "json_object"},
-            max_completion_tokens=300,
+            text={"format": {"type": "json_object"}, "verbosity": TEXT_VERBOSITY_STYLE},
+            reasoning={"effort": REASONING_EFFORT_STYLE},
+            max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
         )
-        style_json = json.loads(style_resp.choices[0].message.content)
+        style_json = json.loads(_response_text_from_obj(style_resp))
         tone = (style_json.get("tone") or "").strip()
         rules = [r.strip() for r in style_json.get("voice_rules", []) if isinstance(r, str) and r.strip()]
         avoids = [a.strip() for a in style_json.get("avoid", []) if isinstance(a, str) and a.strip()]
@@ -543,7 +621,7 @@ async def op_submit_text_batch(payload: dict) -> dict:
     save_state(prefix, "wc_sections.json", sections)
     save_state(prefix, "wc_structure_snapshot.json", {"chapters_list": chapters_list})
 
-    batch_id = submit_batch(sync_openai_client, tasks, "/v1/chat/completions", "chapter_text")
+    batch_id = submit_batch(sync_openai_client, tasks, BATCH_ENDPOINT_RESPONSES, "chapter_text")
     save_state(
         prefix,
         "text_pipeline.json",
@@ -631,7 +709,7 @@ async def op_collect_text_results(payload: dict) -> dict:
         new_batch_id = submit_batch(
             sync_openai_client,
             retry_tasks,
-            "/v1/chat/completions",
+            BATCH_ENDPOINT_RESPONSES,
             f"chapter_text_retry_{retry_count}",
         )
         save_state(
@@ -945,7 +1023,7 @@ async def legacy_full_pipeline(payload):
         chapters_list, chart, focus, style, language, CHAPTER_WORD_TARGET
     )
 
-    batch_id = submit_batch(sync_openai_client, tasks, "/v1/chat/completions", "chapter_text")
+    batch_id = submit_batch(sync_openai_client, tasks, BATCH_ENDPOINT_RESPONSES, "chapter_text")
     batch = poll_batch_until_done(sync_openai_client, batch_id)
     if batch.status not in {"completed", "expired"}:
         raise RuntimeError(f"Chapter text batch ended with status={batch.status}")
@@ -962,7 +1040,7 @@ async def legacy_full_pipeline(payload):
         retry_batch_id = submit_batch(
             sync_openai_client,
             retry_tasks,
-            "/v1/chat/completions",
+            BATCH_ENDPOINT_RESPONSES,
             f"chapter_text_retry_{retry_num}",
         )
         retry_batch = poll_batch_until_done(sync_openai_client, retry_batch_id)

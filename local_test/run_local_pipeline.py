@@ -354,7 +354,7 @@ async def write_chapters(astrology_data, structure, focus, language):
 
     # Write all chapters in parallel
     chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
-    word_target = 10000
+    word_target = 7750
 
     tasks = [
         write_single_chapter(client, idx + 1, ch, astrology_data, word_target, focus, style, language)

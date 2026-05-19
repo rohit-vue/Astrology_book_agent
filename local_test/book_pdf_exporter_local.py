@@ -191,9 +191,9 @@ def save_book_as_pdf(
     )
     output_path = os.path.join(output_dir, filename)
 
-    lang_key = language.title() 
+    lang_key = language.title()
     L = LABELS.get(lang_key, LABELS["English"])
-    
+
     chapter_suffix = "章" if lang_key in ["Japanese", "Chinese"] else "장" if lang_key == "Korean" else ""
     
     bd = book_data.get('birth_data', {})

@@ -51,6 +51,27 @@ resource "aws_lambda_function" "write_chapters" {
     variables = {
       API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys_v2.arn
       ARTIFACTS_BUCKET    = aws_s3_bucket.artifacts_bucket.id
+
+      # GPT-5.5 / gpt-image-2 (Responses + Batch; align with local_test/run_local_batch_pipeline.py)
+      MODEL_CONTENT                  = "gpt-5.5"
+      MODEL_IMAGE                    = "gpt-image-2"
+      BATCH_ENDPOINT_RESPONSES       = "/v1/responses"
+      REASONING_EFFORT_CHAPTER       = "high"
+      TEXT_VERBOSITY_CHAPTER         = "high"
+      CHAPTER_MAX_OUTPUT_TOKENS      = "48000"
+      REASONING_EFFORT_ARCHITECT     = "high"
+      TEXT_VERBOSITY_ARCHITECT       = "high"
+      REASONING_EFFORT_STYLE         = "medium"
+      TEXT_VERBOSITY_STYLE           = "low"
+      STYLE_MAX_OUTPUT_TOKENS        = "600"
+      SECTION_MAX_OUTPUT_TOKENS      = "1000"
+      IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = "200"
+      BATCH_POLL_INTERVAL            = "30"
+      BOOK_WORD_TARGET               = "50000"
+      CHAPTER_WORD_TARGET            = "7750"
+      CHAPTER_WORD_MIN               = "7500"
+      CHAPTER_WORD_MAX               = "8000"
+      MAX_BATCH_RETRIES              = "3"
     }
   }
 }
