@@ -285,7 +285,7 @@ def save_book_as_pdf(
         <!-- TOC -->
         <div class="fm-break fm-break-recto">
             <div class="page toc-page">
-                <h1>{{ labels.index }}</h1>
+                <h1 style="text-transform: uppercase;">{{ labels.index }}</h1>
                 <div class="toc-list">
                 {% for entry in toc_entries %}
                     <div class="toc-entry">
@@ -324,7 +324,7 @@ def save_book_as_pdf(
                 <div class="page chapter-title-page" id="chapter-{{ loop.index }}">
                     <div class="chapter-title-content">
                         <span class="chapter-number">{{ labels.chapter }} {{ loop.index }}{{ suffix }}</span>
-                        <h1>{{ chapter.heading }}</h1>
+                        <h1 style="text-transform: uppercase;">{{ chapter.heading }}</h1>
                     </div>
                 </div>
                 {% if not chapter.image_path %}</div>{% endif %}

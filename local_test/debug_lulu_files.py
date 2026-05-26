@@ -20,6 +20,9 @@ Commands (OpenAPI operation references):
   validate-interior  POST /validate-interior/ + GET /validate-interior/{id}/ (Validate-Interior_*)
   print-job          GET /print-jobs/{id}/ (Print-Jobs_read) — surfaces line item errors
 
+Render cover PDF locally (this script does NOT render covers):
+  cd local_test && docker compose run --rm generate-cover
+
 Example (cover size mismatch — width must fall in Lulu's inch band for your POD + page count):
   python debug_lulu_files.py cover-dimensions --pages 140
   python debug_lulu_files.py validate-cover --url \"https://...cover.pdf\" --pages 140

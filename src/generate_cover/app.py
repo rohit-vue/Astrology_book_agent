@@ -16,28 +16,9 @@ API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
 LULU_API_BASE = os.environ.get("LULU_API_BASE", "https://api.lulu.com").rstrip("/")
 LULU_POD_PACKAGE_ID = os.environ.get("LULU_POD_PACKAGE_ID", "0550X0850.BW.STD.LW.060UC444.MNG")
 
-PROTECTIVE_COVER_TEXT = {
-    "english": "Remove Protective Cover Before Reading",
-    "spanish": "Retire la cubierta protectora antes de leer",
-    "french": "Retirez la couverture de protection avant de lire",
-    "german": "Schutzumschlag vor dem Lesen entfernen",
-    "italian": "Rimuovere la copertina protettiva prima di leggere",
-    "portuguese": "Remova a capa protetora antes de ler",
-    "japanese": "\u8aad\u3080\u524d\u306b\u4fdd\u8b77\u30ab\u30d0\u30fc\u3092\u53d6\u308a\u5916\u3057\u3066\u304f\u3060\u3055\u3044",
-    "hindi": "\u092a\u095d\u0928\u0947 \u0938\u0947 \u092a\u0939\u0932\u0947 \u0938\u0941\u0930\u0915\u094d\u0937\u093e \u0915\u0935\u0930 \u0939\u091f\u093e\u090f\u0901",
-    "chinese": "\u9605\u8bfb\u524d\u8bf7\u53d4\u4e0b\u4fdd\u62a4\u5c01\u5957",
-    "korean": "\uc77d\uae30 \uc804\uc5d0 \ubcf4\ud638 \ucee4\ubc84\ub97c \uc81c\uac70\ud558\uc138\uc694",
-    "russian": "\u0421\u043d\u0438\u043c\u0438\u0442\u0435 \u0437\u0430\u0449\u0438\u0442\u043d\u0443\u044e \u043e\u0431\u043b\u043e\u0436\u043a\u0443 \u043f\u0435\u0440\u0435\u0434 \u0447\u0442\u0435\u043d\u0438\u0435\u043c",
-}
-
 
 def resolve_language_key(language: str) -> str:
     return (language or "English").strip().lower()
-
-
-def resolve_cover_text(language: str) -> str:
-    language_key = resolve_language_key(language)
-    return PROTECTIVE_COVER_TEXT.get(language_key, PROTECTIVE_COVER_TEXT["english"])
 
 
 def resolve_wrap_mode(language: str) -> str:
@@ -99,6 +80,95 @@ def draw_centered_text(
         text_w = bbox[2] - bbox[0]
         draw.text((x + (w - text_w) // 2, current_y), line, font=font, fill=(255, 255, 255))
         current_y += line_height
+
+
+def draw_centered_stacked_rows(
+    draw: ImageDraw.ImageDraw,
+    rows: list[tuple[str, int]],
+    box: tuple[int, int, int, int],
+    language: str,
+    row_gap: int = 28,
+):
+    """Draw multiple centered rows (text, font_size) inside box, largest row first."""
+    x, y, w, h = box
+    wrap_mode = resolve_wrap_mode(language)
+    usable = [(text.strip(), size) for text, size in rows if text and str(text).strip()]
+    if not usable:
+        return
+
+    prepared: list[tuple[list[str], ImageFont.FreeTypeFont, int]] = []
+    for text, size in usable:
+        font = load_font_for_language(language, size)
+        lines = wrap_text(draw, text, font, max(1, int(w * 0.9)), wrap_mode=wrap_mode)
+        lh = (font.getbbox("Aj")[3] - font.getbbox("Aj")[1]) + 14
+        prepared.append((lines, font, lh))
+
+    total_height = sum(lh * len(lines) for lines, _, lh in prepared)
+    total_height += row_gap * max(0, len(prepared) - 1)
+    current_y = y + (h - total_height) // 2
+
+    for block_idx, (lines, font, lh) in enumerate(prepared):
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_w = bbox[2] - bbox[0]
+            draw.text((x + (w - text_w) // 2, current_y), line, font=font, fill=(255, 255, 255))
+            current_y += lh
+        if block_idx < len(prepared) - 1:
+            current_y += row_gap
+
+
+def resolve_book_title(payload: dict) -> str:
+    structure = payload.get("full_book_structure") or {}
+    meta = structure.get("metadata") or structure.get("book_metadata") or {}
+    return (
+        (meta.get("title") or payload.get("book_title") or payload.get("cover_title") or "The Luminary Blueprint")
+        .strip()
+    )
+
+
+def resolve_focus_line(payload: dict) -> str:
+    return (payload.get("focus") or "Personality").strip()
+
+
+def format_birth_details_text(birth_data: dict) -> str:
+    """Front cover row 3: YYYY-MM-DD HH:MM and (lat, lon) from birth_data."""
+    if not birth_data:
+        return ""
+
+    year = birth_data.get("year", 2000)
+    month = birth_data.get("month", 1)
+    day = birth_data.get("day", 1)
+    hour = birth_data.get("hour", 0)
+    minute = birth_data.get("min", birth_data.get("minute", 0))
+    birth_when = f"{year}-{int(month):02d}-{int(day):02d} {int(hour):02d}:{int(minute):02d}"
+
+    lat = birth_data.get("lat")
+    lon = birth_data.get("lon")
+    if lat is not None and lon is not None:
+        return f"{birth_when}\n({float(lat):.6f}, {float(lon):.6f})"
+    return birth_when
+
+
+def build_front_cover_rows(payload: dict) -> list[tuple[str, int]]:
+    language = payload.get("language", "English")
+    birth_data = payload.get("birth_data") or {}
+
+    title = resolve_book_title(payload)
+    focus = resolve_focus_line(payload)
+    birth_block = format_birth_details_text(birth_data)
+
+    lang_key = resolve_language_key(language)
+    if lang_key in {"chinese", "japanese", "korean"}:
+        return [
+            (title, 54),
+            (focus, 44),
+            (birth_block, 38),
+        ]
+    return [
+        (title, 54),
+        (focus, 44),
+        (birth_block, 38),
+    ]
 
 
 def _bundled_fonts_dir() -> str:
@@ -196,48 +266,151 @@ def _legacy_cover_size_inches(page_count: int) -> Tuple[float, float, float]:
     return total_w, total_h, spine_width
 
 
-def resolve_cover_layout_inches(
-    page_count: int, pod_package_id: str
-) -> Tuple[float, float, float, dict]:
-    """
-    Returns (total_w_inch, total_h_inch, spine_width_inch, meta_for_logs).
-    Spine is derived from Lulu total width minus fixed trim bands so the spread matches validation.
-    """
+def _get_lulu_api_keys() -> tuple[str | None, str | None]:
+    key = os.environ.get("LULU_CLIENT_KEY") or os.environ.get("LuluApiClientKey")
+    secret = os.environ.get("LULU_CLIENT_SECRET") or os.environ.get("LuluApiClientSecret")
+    if key and secret:
+        return key, secret
+    if not API_KEYS_SECRET_ARN:
+        return None, None
+    secret_payload = secrets_manager.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
+    secrets = json.loads(secret_payload["SecretString"])
+    return secrets.get("LuluApiClientKey"), secrets.get("LuluApiClientSecret")
+
+
+def resolve_cover_layout_inches(page_count: int, pod_package_id: str) -> Tuple[float, float, float]:
     COVER_WIDTH = 5.895
     FLAP_WIDTH = 3.5
     BLEED = 0.125
     fixed_band = (BLEED * 2) + (FLAP_WIDTH * 2) + (COVER_WIDTH * 2)
 
-    meta: dict = {"source": "lulu_api"}
+    if os.environ.get("USE_LEGACY_COVER_LAYOUT", "").strip().lower() in ("1", "true", "yes"):
+        return _legacy_cover_size_inches(page_count)
+
     try:
-        if not API_KEYS_SECRET_ARN:
-            raise ValueError("API_KEYS_SECRET_ARN not set")
-        secret_payload = secrets_manager.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
-        secrets = json.loads(secret_payload["SecretString"])
-        client_key = secrets.get("LuluApiClientKey")
-        client_secret = secrets.get("LuluApiClientSecret")
+        client_key, client_secret = _get_lulu_api_keys()
         if not client_key or not client_secret:
-            raise ValueError("Lulu API credentials missing in secret")
+            raise ValueError("Lulu API credentials not configured")
         token = get_lulu_token(client_key, client_secret)
         total_w, total_h = fetch_lulu_cover_dimensions_inches(token, pod_package_id, page_count)
         spine_width = total_w - fixed_band
         if spine_width <= 0:
-            raise ValueError(f"Non-positive spine from Lulu width {total_w}: check trim constants vs product.")
-        meta["lulu_width_in"] = total_w
-        meta["lulu_height_in"] = total_h
-        meta["derived_spine_in"] = spine_width
-        return total_w, total_h, spine_width, meta
+            raise ValueError(f"Invalid spine width from Lulu dimensions: {total_w}")
+        print(f"Lulu cover dimensions: {total_w:.4f}\" x {total_h:.4f}\", spine {spine_width:.4f}\"")
+        return total_w, total_h, spine_width
     except Exception as e:
         print(f"Lulu cover-dimensions unavailable ({e}); using legacy spine estimate.")
-        total_w, total_h, spine_width = _legacy_cover_size_inches(page_count)
-        meta = {"source": "legacy_fallback", "error": str(e)}
-        return total_w, total_h, spine_width, meta
+        return _legacy_cover_size_inches(page_count)
+
+
+def render_cover_canvas(payload: dict) -> tuple[Image.Image, dict]:
+    """Build full dust-jacket image plus front-panel crop box (x, y, w, h) in pixels."""
+    page_count = int(payload["page_count"])
+    language = payload.get("language", "English")
+
+    DPI = 300
+    COVER_WIDTH = 5.895
+    FLAP_WIDTH = 3.5
+    BLEED = 0.125
+
+    total_w_inch, total_h_inch, spine_width = resolve_cover_layout_inches(
+        page_count, LULU_POD_PACKAGE_ID
+    )
+
+    w_px = int(round(total_w_inch * DPI))
+    h_px = int(round(total_h_inch * DPI))
+    canvas = Image.new("RGB", (w_px, h_px), "black")
+    draw = ImageDraw.Draw(canvas)
+
+    front_x = int(round((BLEED + FLAP_WIDTH + COVER_WIDTH + spine_width) * DPI))
+    front_y = int(round(BLEED * DPI))
+    front_w = int(round(COVER_WIDTH * DPI))
+    front_h = int(round((total_h_inch - 2 * BLEED) * DPI))
+
+    draw_centered_stacked_rows(
+        draw,
+        build_front_cover_rows(payload),
+        (front_x, front_y, front_w, front_h),
+        language,
+    )
+
+    front_box = {"x": front_x, "y": front_y, "w": front_w, "h": front_h, "dpi": DPI}
+    return canvas, front_box
+
+
+def render_cover_pdf_bytes(payload: dict) -> bytes:
+    canvas, front_box = render_cover_canvas(payload)
+    final_buffer = io.BytesIO()
+    canvas.save(final_buffer, format="PDF", resolution=front_box["dpi"])
+    final_buffer.seek(0)
+    return final_buffer.read()
+
+
+def generate_cover_artifact(
+    payload: dict,
+    *,
+    output_dir: str | None = None,
+    upload_s3: bool = True,
+) -> dict:
+    """Render cover PDF; optionally save locally and/or upload to S3."""
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+
+    canvas, front_box = render_cover_canvas(payload)
+    dpi = front_box["dpi"]
+    pdf_buffer = io.BytesIO()
+    canvas.save(pdf_buffer, format="PDF", resolution=dpi)
+    pdf_bytes = pdf_buffer.getvalue()
+    payload = dict(payload)
+
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        local_pdf = os.path.join(output_dir, f"{line_item_id}_dust_jacket_final.pdf")
+        with open(local_pdf, "wb") as f:
+            f.write(pdf_bytes)
+        payload["local_cover_pdf_path"] = local_pdf
+        print(f"Saved local cover PDF -> {local_pdf}")
+
+        fx, fy, fw, fh = front_box["x"], front_box["y"], front_box["w"], front_box["h"]
+        front_cover = canvas.crop((fx, fy, fx + fw, fy + fh))
+        front_cover = ImageOps.fit(front_cover, (1024, 1792), Image.Resampling.LANCZOS)
+        local_jpg = os.path.join(output_dir, f"{line_item_id}_front_cover.jpg")
+        front_cover.save(local_jpg, format="JPEG", quality=95)
+        payload["local_front_cover_jpg"] = local_jpg
+        print(f"Saved local front cover preview -> {local_jpg}")
+
+    if upload_s3 and ARTIFACTS_BUCKET:
+        key = f"book-covers/{order_id}/{line_item_id}_dust_jacket_final.pdf"
+        s3_client.put_object(
+            Bucket=ARTIFACTS_BUCKET,
+            Key=key,
+            Body=pdf_bytes,
+            ContentType="application/pdf",
+        )
+        payload["cover_image_s3_url"] = f"https://{ARTIFACTS_BUCKET}.s3.amazonaws.com/{key}"
+
+        fx, fy, fw, fh = front_box["x"], front_box["y"], front_box["w"], front_box["h"]
+        front_cover = canvas.crop((fx, fy, fx + fw, fy + fh))
+        front_cover = ImageOps.fit(front_cover, (1024, 1792), Image.Resampling.LANCZOS)
+        front_buffer = io.BytesIO()
+        front_cover.save(front_buffer, format="JPEG", quality=95)
+        front_buffer.seek(0)
+        front_key = f"book-covers/{order_id}/{line_item_id}_front_cover.jpg"
+        s3_client.put_object(
+            Bucket=ARTIFACTS_BUCKET,
+            Key=front_key,
+            Body=front_buffer,
+            ContentType="image/jpeg",
+        )
+        payload["hardcover_front_image_url"] = f"https://{ARTIFACTS_BUCKET}.s3.amazonaws.com/{front_key}"
+
+    return payload
 
 
 def lambda_handler(event, context):
     print(f"GenerateCover received event: {json.dumps(event, indent=2)}")
     payload = event.get("Payload", event)
-    
+
     order_id = payload.get("order_id")
     line_item_id = payload.get("line_item_id")
     birth_data = payload.get("birth_data")
@@ -247,71 +420,12 @@ def lambda_handler(event, context):
     if not all([order_id, line_item_id, birth_data, page_count]):
         raise ValueError(f"Missing required fields: {order_id}, {line_item_id}, {birth_data}, {page_count}")
 
-    page_count = int(page_count)
+    payload["page_count"] = int(page_count)
+    payload.setdefault("language", language)
+    payload.setdefault("birth_data", birth_data)
 
     try:
-        DPI = 300
-        COVER_WIDTH = 5.895
-        FLAP_WIDTH = 3.5
-        BLEED = 0.125
-
-        total_w_inch, total_h_inch, spine_width, layout_meta = resolve_cover_layout_inches(
-            page_count, LULU_POD_PACKAGE_ID
-        )
-        print(f"Cover layout: {json.dumps(layout_meta, indent=2)}")
-        print(f"Spine width (in): {spine_width:.4f}; total spread (in): {total_w_inch:.4f} x {total_h_inch:.4f}")
-
-        w_px = int(round(total_w_inch * DPI))
-        h_px = int(round(total_h_inch * DPI))
-
-        canvas = Image.new("RGB", (w_px, h_px), "black")
-        draw = ImageDraw.Draw(canvas)
-        font = load_font_for_language(language, 64)
-
-        front_x = int(round((BLEED + FLAP_WIDTH + COVER_WIDTH + spine_width) * DPI))
-        front_y = int(round(BLEED * DPI))
-        front_w = int(round(COVER_WIDTH * DPI))
-        front_h = int(round((total_h_inch - 2 * BLEED) * DPI))
-
-        cover_text = resolve_cover_text(language)
-        draw_centered_text(
-            draw,
-            cover_text,
-            font,
-            (front_x, front_y, front_w, front_h),
-            wrap_mode=resolve_wrap_mode(language),
-        )
-
-        final_buffer = io.BytesIO()
-        canvas.save(final_buffer, format="PDF", resolution=DPI)
-        final_buffer.seek(0)
-
-        key = f"book-covers/{order_id}/{line_item_id}_dust_jacket_final.pdf"
-        s3_client.put_object(
-            Bucket=ARTIFACTS_BUCKET,
-            Key=key,
-            Body=final_buffer,
-            ContentType="application/pdf",
-        )
-
-        front_cover = canvas.crop((front_x, front_y, front_x + front_w, front_y + front_h))
-        front_cover = ImageOps.fit(front_cover, (1024, 1792), Image.Resampling.LANCZOS)
-        front_cover_buffer = io.BytesIO()
-        front_cover.save(front_cover_buffer, format="JPEG", quality=95)
-        front_cover_buffer.seek(0)
-
-        front_key = f"book-covers/{order_id}/{line_item_id}_front_cover.jpg"
-        s3_client.put_object(
-            Bucket=ARTIFACTS_BUCKET,
-            Key=front_key,
-            Body=front_cover_buffer,
-            ContentType="image/jpeg",
-        )
-
-        payload["cover_image_s3_url"] = f"https://{ARTIFACTS_BUCKET}.s3.amazonaws.com/{key}"
-        payload["hardcover_front_image_url"] = f"https://{ARTIFACTS_BUCKET}.s3.amazonaws.com/{front_key}"
-        return payload
-
+        return generate_cover_artifact(payload, upload_s3=True)
     except Exception as e:
         print(f"ERROR: {e}")
         raise

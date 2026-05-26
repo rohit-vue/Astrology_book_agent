@@ -1,0 +1,17 @@
+# Match GenerateCover Lambda runtime deps (src/generate_cover/requirements.txt).
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm
+
+RUN apt-get update && apt-get install -y \
+    fonts-noto-cjk \
+    fonts-noto-cjk-extra \
+    fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    Pillow \
+    requests==2.31.0 \
+    boto3 \
+    python-dotenv
+
+WORKDIR /app
+ENTRYPOINT ["python"]

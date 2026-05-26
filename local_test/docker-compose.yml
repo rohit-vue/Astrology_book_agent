@@ -42,6 +42,25 @@ services:
       - ./output:/app/output
     command: ["run_local_batch_images_from_artifacts.py"]
 
+  generate-cover:
+    build:
+      context: .
+      dockerfile: Dockerfile.generate_cover
+    env_file:
+      - .env
+    environment:
+      - LAMBDA_TASK_ROOT=/app/generate_cover
+      - USE_LEGACY_COVER_LAYOUT=${USE_LEGACY_COVER_LAYOUT:-0}
+      - PAGE_COUNT=${PAGE_COUNT:-220}
+      - LULU_POD_PACKAGE_ID=${LULU_POD_PACKAGE_ID:-0550X0850.BW.STD.LW.060UC444.MNG}
+      - LULU_API_BASE=${LULU_API_BASE:-https://api.lulu.com}
+    volumes:
+      - ../src/generate_cover:/app/generate_cover:ro
+      - ./run_generate_cover_local.py:/app/run_generate_cover_local.py:ro
+      - ./pipeline_config.json:/app/pipeline_config.json:ro
+      - ./output:/app/output
+    command: ["run_generate_cover_local.py"]
+
   pdf-from-artifacts:
     build:
       context: .
