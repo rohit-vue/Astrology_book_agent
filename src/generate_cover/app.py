@@ -193,7 +193,7 @@ def resolve_focus_line(payload: dict) -> str:
 
 
 def format_birth_details_text(birth_data: dict) -> str:
-    """Front cover row 3: YYYY-MM-DD HH:MM and (lat, lon) from birth_data."""
+    """Front cover row 3: YYYY-MM-DD HH:MM from birth_data."""
     if not birth_data:
         return ""
 
@@ -202,13 +202,7 @@ def format_birth_details_text(birth_data: dict) -> str:
     day = birth_data.get("day", 1)
     hour = birth_data.get("hour", 0)
     minute = birth_data.get("min", birth_data.get("minute", 0))
-    birth_when = f"{year}-{int(month):02d}-{int(day):02d} {int(hour):02d}:{int(minute):02d}"
-
-    lat = birth_data.get("lat")
-    lon = birth_data.get("lon")
-    if lat is not None and lon is not None:
-        return f"{birth_when}\n({float(lat):.6f}, {float(lon):.6f})"
-    return birth_when
+    return f"{year}-{int(month):02d}-{int(day):02d} {int(hour):02d}:{int(minute):02d}"
 
 
 def build_front_cover_rows(payload: dict) -> list[tuple[str, int]]:

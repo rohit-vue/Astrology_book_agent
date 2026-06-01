@@ -31,5 +31,8 @@ terraform.tfstate.backup
 *.tfstate.*
 
 # IDE / Operating System Files
-.vscode/
 .DS_Store
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
