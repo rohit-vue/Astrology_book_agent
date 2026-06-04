@@ -6,15 +6,18 @@ import os
 import io
 from typing import Tuple
 import requests
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont
 
-s3_client = boto3.client("s3")
-secrets_manager = boto3.client("secretsmanager")
+_aws_region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
+s3_client = boto3.client("s3", region_name=_aws_region)
+secrets_manager = boto3.client("secretsmanager", region_name=_aws_region)
 
 ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET")
 API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
 LULU_API_BASE = os.environ.get("LULU_API_BASE", "https://api.lulu.com").rstrip("/")
 LULU_POD_PACKAGE_ID = os.environ.get("LULU_POD_PACKAGE_ID", "0550X0850.BW.STD.LW.060UC444.MNG")
+TEXT_WRAP_WIDTH_RATIO = 0.85
+FRONT_COVER_PREVIEW_SIZE = (1024, 1792)
 
 
 def resolve_language_key(language: str) -> str:
@@ -27,38 +30,97 @@ def resolve_wrap_mode(language: str) -> str:
     return "word"
 
 
+def _text_line_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    return bbox[2] - bbox[0]
+
+
+def _wrap_char_chunks(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for ch in text:
+        candidate = current + ch
+        if current and _text_line_width(draw, candidate, font) > max_width:
+            lines.append(current)
+            current = ch
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [text]
+
+
+def _wrap_word_chunks(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width: int,
+) -> list[str]:
+    words = text.split()
+    if not words:
+        return [text]
+
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if _text_line_width(draw, candidate, font) <= max_width:
+            current = candidate
+        else:
+            if _text_line_width(draw, current, font) <= max_width:
+                lines.append(current)
+            else:
+                lines.extend(_wrap_char_chunks(draw, current, font, max_width))
+            current = word
+
+    if _text_line_width(draw, current, font) <= max_width:
+        lines.append(current)
+    else:
+        lines.extend(_wrap_char_chunks(draw, current, font, max_width))
+    return lines
+
+
 def wrap_text(
     draw: ImageDraw.ImageDraw,
     text: str,
     font: ImageFont.FreeTypeFont,
     max_width: int,
     wrap_mode: str = "word",
-):
+) -> list[str]:
     if not text:
-        return [text]
+        return []
+
+    if "\n" in text:
+        lines: list[str] = []
+        for segment in text.split("\n"):
+            if segment.strip():
+                lines.extend(wrap_text(draw, segment.strip(), font, max_width, wrap_mode=wrap_mode))
+        return lines
 
     if wrap_mode == "char":
-        chunks = list(text)
-        joiner = ""
-    else:
-        chunks = text.split()
-        joiner = " "
+        return _wrap_char_chunks(draw, text, font, max_width)
+    return _wrap_word_chunks(draw, text, font, max_width)
 
-    if not chunks:
-        return [text]
 
-    lines = []
-    current = chunks[0]
-    for chunk in chunks[1:]:
-        candidate = f"{current}{joiner}{chunk}"
-        bbox = draw.textbbox((0, 0), candidate, font=font)
-        if (bbox[2] - bbox[0]) <= max_width:
-            current = candidate
-        else:
-            lines.append(current)
-            current = chunk
-    lines.append(current)
-    return lines
+def resize_front_cover_preview(
+    image: Image.Image,
+    target_size: tuple[int, int] = FRONT_COVER_PREVIEW_SIZE,
+    background: tuple[int, int, int] = (0, 0, 0),
+) -> Image.Image:
+    """Scale to fit inside target_size without cropping (letterbox on black)."""
+    tw, th = target_size
+    fitted = image.copy()
+    fitted.thumbnail((tw, th), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (tw, th), background)
+    paste_x = (tw - fitted.width) // 2
+    paste_y = (th - fitted.height) // 2
+    canvas.paste(fitted, (paste_x, paste_y))
+    return canvas
 
 
 def draw_centered_text(
@@ -69,7 +131,7 @@ def draw_centered_text(
     wrap_mode: str = "word",
 ):
     x, y, w, h = box
-    lines = wrap_text(draw, text, font, max(1, int(w * 0.9)), wrap_mode=wrap_mode)
+    lines = wrap_text(draw, text, font, max(1, int(w * TEXT_WRAP_WIDTH_RATIO)), wrap_mode=wrap_mode)
     bbox_sample = font.getbbox("Aj")
     line_height = (bbox_sample[3] - bbox_sample[1]) + 18
     total_height = len(lines) * line_height
@@ -99,7 +161,7 @@ def draw_centered_stacked_rows(
     prepared: list[tuple[list[str], ImageFont.FreeTypeFont, int]] = []
     for text, size in usable:
         font = load_font_for_language(language, size)
-        lines = wrap_text(draw, text, font, max(1, int(w * 0.9)), wrap_mode=wrap_mode)
+        lines = wrap_text(draw, text, font, max(1, int(w * TEXT_WRAP_WIDTH_RATIO)), wrap_mode=wrap_mode)
         lh = (font.getbbox("Aj")[3] - font.getbbox("Aj")[1]) + 14
         prepared.append((lines, font, lh))
 
@@ -131,7 +193,7 @@ def resolve_focus_line(payload: dict) -> str:
 
 
 def format_birth_details_text(birth_data: dict) -> str:
-    """Front cover row 3: YYYY-MM-DD HH:MM and (lat, lon) from birth_data."""
+    """Front cover row 3: YYYY-MM-DD HH:MM from birth_data."""
     if not birth_data:
         return ""
 
@@ -140,13 +202,7 @@ def format_birth_details_text(birth_data: dict) -> str:
     day = birth_data.get("day", 1)
     hour = birth_data.get("hour", 0)
     minute = birth_data.get("min", birth_data.get("minute", 0))
-    birth_when = f"{year}-{int(month):02d}-{int(day):02d} {int(hour):02d}:{int(minute):02d}"
-
-    lat = birth_data.get("lat")
-    lon = birth_data.get("lon")
-    if lat is not None and lon is not None:
-        return f"{birth_when}\n({float(lat):.6f}, {float(lon):.6f})"
-    return birth_when
+    return f"{year}-{int(month):02d}-{int(day):02d} {int(hour):02d}:{int(minute):02d}"
 
 
 def build_front_cover_rows(payload: dict) -> list[tuple[str, int]]:
@@ -373,7 +429,7 @@ def generate_cover_artifact(
 
         fx, fy, fw, fh = front_box["x"], front_box["y"], front_box["w"], front_box["h"]
         front_cover = canvas.crop((fx, fy, fx + fw, fy + fh))
-        front_cover = ImageOps.fit(front_cover, (1024, 1792), Image.Resampling.LANCZOS)
+        front_cover = resize_front_cover_preview(front_cover)
         local_jpg = os.path.join(output_dir, f"{line_item_id}_front_cover.jpg")
         front_cover.save(local_jpg, format="JPEG", quality=95)
         payload["local_front_cover_jpg"] = local_jpg
@@ -391,7 +447,7 @@ def generate_cover_artifact(
 
         fx, fy, fw, fh = front_box["x"], front_box["y"], front_box["w"], front_box["h"]
         front_cover = canvas.crop((fx, fy, fx + fw, fy + fh))
-        front_cover = ImageOps.fit(front_cover, (1024, 1792), Image.Resampling.LANCZOS)
+        front_cover = resize_front_cover_preview(front_cover)
         front_buffer = io.BytesIO()
         front_cover.save(front_buffer, format="JPEG", quality=95)
         front_buffer.seek(0)

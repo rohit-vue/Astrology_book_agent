@@ -20,12 +20,12 @@ from datetime import datetime
 
 import base64
 import requests
-import httpx
+import httpx  # pyright: ignore[reportMissingImports]
 from dotenv import load_dotenv
-from openai import OpenAI, AsyncOpenAI
+from openai import OpenAI, AsyncOpenAI  # pyright: ignore[reportMissingImports]
 
 sys.path.insert(0, "/app/generate_pdf")
-from book_pdf_exporter import save_book_as_pdf
+from book_pdf_exporter import save_book_as_pdf # pyright: ignore[reportMissingImports]
 
 load_dotenv("/app/.env")
 

@@ -50,6 +50,8 @@ services:
       - .env
     environment:
       - LAMBDA_TASK_ROOT=/app/generate_cover
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_REGION=us-east-1
       - USE_LEGACY_COVER_LAYOUT=${USE_LEGACY_COVER_LAYOUT:-0}
       - PAGE_COUNT=${PAGE_COUNT:-220}
       - LULU_POD_PACKAGE_ID=${LULU_POD_PACKAGE_ID:-0550X0850.BW.STD.LW.060UC444.MNG}
