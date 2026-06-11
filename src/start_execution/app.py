@@ -62,7 +62,7 @@ def parse_birth_data_with_ai(date_time_str, location_str):
     ensure_openai_api_key()
     prompt = build_data_extraction_prompt(date_time_str, location_str)
     response = openai_client.chat.completions.create(
-        model="gpt-5.2-2025-12-11",
+        model="gpt-5.4-mini-2026-03-17",
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0.0

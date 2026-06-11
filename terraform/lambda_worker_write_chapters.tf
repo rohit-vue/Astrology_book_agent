@@ -38,7 +38,7 @@ resource "aws_lambda_function" "write_chapters" {
   handler      = "app.lambda_handler"
   runtime      = "python3.11" # Upgraded runtime
   timeout      = 900
-  memory_size  = 512
+  memory_size  = 2048
 
   filename         = data.archive_file.write_chapters_code.output_path
   source_code_hash = data.archive_file.write_chapters_code.output_base64sha256
@@ -58,13 +58,16 @@ resource "aws_lambda_function" "write_chapters" {
       BATCH_ENDPOINT_RESPONSES       = "/v1/responses"
       REASONING_EFFORT_CHAPTER       = "high"
       TEXT_VERBOSITY_CHAPTER         = "high"
-      CHAPTER_MAX_OUTPUT_TOKENS      = "48000"
+      CHAPTER_MAX_OUTPUT_TOKENS      = "25000"
       REASONING_EFFORT_ARCHITECT     = "high"
       TEXT_VERBOSITY_ARCHITECT       = "high"
       REASONING_EFFORT_STYLE         = "medium"
       TEXT_VERBOSITY_STYLE           = "low"
       STYLE_MAX_OUTPUT_TOKENS        = "600"
-      SECTION_MAX_OUTPUT_TOKENS      = "1000"
+      SECTION_MAX_OUTPUT_TOKENS      = "4000"
+      SECTION_WORD_TARGET            = "550"
+      SECTION_WORD_MIN               = "500"
+      SECTION_WORD_MAX               = "600"
       IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = "200"
       BATCH_POLL_INTERVAL            = "30"
       BOOK_WORD_TARGET               = "50000"

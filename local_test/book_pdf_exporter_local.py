@@ -70,6 +70,20 @@ LABELS = {
     }
 }
 
+LANG_CODES = {
+    "English": "en",
+    "Spanish": "es",
+    "French": "fr",
+    "German": "de",
+    "Italian": "it",
+    "Portuguese": "pt",
+    "Japanese": "ja",
+    "Hindi": "hi",
+    "Chinese": "zh",
+    "Korean": "ko",
+    "Russian": "ru",
+}
+
 PUBLISHED_BY_LABELS = {
     "english": "Published by",
     "spanish": "Publicado por",
@@ -247,7 +261,7 @@ def save_book_as_pdf(
 
     html_template = Template("""
     <!DOCTYPE html>
-    <html lang="{{ lang }}">
+    <html lang="{{ html_lang }}">
     <head><meta charset="UTF-8"><title>{{ book_title }}</title></head>
     <body>
         <!-- HALF TITLE -->
@@ -337,7 +351,7 @@ def save_book_as_pdf(
                 <div class="page chapter-title-page" id="chapter-{{ loop.index }}">
                     <div class="chapter-title-content">
                         <span class="chapter-number">{{ labels.chapter }} {{ loop.index }}{{ suffix }}</span>
-                        <h1 style="text-transform: uppercase;">{{ chapter.heading }}</h1>
+                        <h1 lang="{{ html_lang }}" style="text-transform: uppercase;">{{ chapter.heading }}</h1>
                     </div>
                 </div>
                 {% if not chapter.image_path %}</div>{% endif %}
@@ -453,7 +467,7 @@ def save_book_as_pdf(
     .title-decoration { font-size: 24pt; margin: 1em 0; color: #555; }
     .print-date-page p { text-align: center; font-style: italic; font-size: 10pt; }
     .chapter-title-page { display: flex; width: 100%; align-items: center; justify-content: center; text-align: center; }
-    .chapter-title-content h1 { font-size: 35pt }
+    .chapter-title-content h1 { font-size: 35pt; hyphens: auto; }
     .chapter-number { display: block; font-size: 16pt; font-style: italic; color: #666; margin-bottom: 1.5em; text-transform: uppercase; }
     .content-page { padding: 0; }
     .content-page h2 { font-size: 20pt; text-transform: uppercase; margin-bottom: 2.5em; letter-spacing: 0.1em; }
@@ -484,7 +498,8 @@ def save_book_as_pdf(
     base_url = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
     published_by_label = PUBLISHED_BY_LABELS.get(language.strip().lower(), PUBLISHED_BY_LABELS["english"])
-    final_context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text, "published_by_label": published_by_label}
+    html_lang = LANG_CODES.get(language, "en")
+    final_context = {"book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date, "toc_entries": toc_base, **book_data, "lang": language, "html_lang": html_lang, "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text, "published_by_label": published_by_label}
 
     print("PDF Engine: Pass 1 (TOC probe without parity padding)")
     toc_probe_doc = HTML(

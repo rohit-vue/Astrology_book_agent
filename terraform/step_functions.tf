@@ -265,7 +265,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                     },
                     WaitTextPoll = {
                       Type    = "Wait",
-                      Seconds = 45,
+                      Seconds = 300,
                       Next    = "CheckTextBatch"
                     },
                     CheckTextBatch = {
@@ -361,7 +361,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                     },
                     WaitImagePoll = {
                       Type    = "Wait",
-                      Seconds = 45,
+                      Seconds = 300,
                       Next    = "CheckImageBatch"
                     },
                     CheckImageBatch = {

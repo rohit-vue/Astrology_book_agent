@@ -22,7 +22,7 @@ resource "aws_lambda_function" "order_ingestion" {
   ]
 
   timeout     = 60
-  memory_size = 256
+  memory_size = 512
 
   environment {
     variables = {

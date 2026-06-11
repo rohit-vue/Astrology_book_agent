@@ -35,7 +35,11 @@ ASTRO_WESTERN_KEY = os.environ["ASTROLOGY_WESTERN_API_KEY"]
 ASTRO_VEDIC_UID = os.environ["ASTROLOGY_VEDIC_USER_ID"]
 ASTRO_VEDIC_KEY = os.environ["ASTROLOGY_VEDIC_API_KEY"]
 
-MODEL_TEXT = "gpt-5.2-2025-12-11"
+MODEL_TEXT = "gpt-5.4-mini-2026-03-17"
+SECTION_WORD_TARGET = 550
+SECTION_WORD_MIN = 500
+SECTION_WORD_MAX = 600
+SECTION_MAX_TOKENS = 2000
 MODEL_IMAGE = "gpt-image-1-mini"
 MODEL_STABLE = "gpt-4o"
 
@@ -212,6 +216,10 @@ async def generate_section(client, name, description, style, language):
     Language: {language}
     Style: {style}
     Context: {description}
+    **Word Contract:** Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
+    **Length Rule:** Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
+    **Layout Rule:** This section must fit on two printed pages. End with a complete sentence.
+    **Paragraphing:** Plain paragraphs only. Use at most 3-4 paragraph breaks in the whole section.
     Directive: Write in second person ("You"). Start directly. Plain text only.
     """
     try:
@@ -219,10 +227,11 @@ async def generate_section(client, name, description, style, language):
             model=MODEL_STABLE,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=800,
+            max_tokens=SECTION_MAX_TOKENS,
         )
         text = resp.choices[0].message.content.strip()
-        print(f"  {name} done: {len(text)} chars")
+        word_count = len(text.split())
+        print(f"  {name} done: {word_count} words, {len(text)} chars")
         return text
     except Exception as e:
         print(f"  Error generating {name}: {e}")

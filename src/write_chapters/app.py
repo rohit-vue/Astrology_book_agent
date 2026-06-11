@@ -4,6 +4,7 @@ import os
 import asyncio
 import time
 import base64
+import re
 from openai import AsyncOpenAI, OpenAI
 from urllib.parse import urlparse
 
@@ -50,7 +51,10 @@ REASONING_EFFORT_STYLE = _env_str("REASONING_EFFORT_STYLE", "medium")
 TEXT_VERBOSITY_STYLE = _env_str("TEXT_VERBOSITY_STYLE", "low")
 STYLE_MAX_OUTPUT_TOKENS = _env_int("STYLE_MAX_OUTPUT_TOKENS", 600)
 
-SECTION_MAX_OUTPUT_TOKENS = _env_int("SECTION_MAX_OUTPUT_TOKENS", 1000)
+SECTION_MAX_OUTPUT_TOKENS = _env_int("SECTION_MAX_OUTPUT_TOKENS", 4000)
+SECTION_WORD_TARGET = _env_int("SECTION_WORD_TARGET", 550)
+SECTION_WORD_MIN = _env_int("SECTION_WORD_MIN", 500)
+SECTION_WORD_MAX = _env_int("SECTION_WORD_MAX", 600)
 IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = _env_int("IMAGE_SUMMARY_MAX_OUTPUT_TOKENS", 200)
 
 BATCH_POLL_INTERVAL = _env_int("BATCH_POLL_INTERVAL", 15)
@@ -64,6 +68,80 @@ IMAGE_PROMPT_FALLBACK = (
     "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. "
     "Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
 )
+
+CHAPTER_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/chapter"
+CHAPTER_PROMPT_FALLBACK = """Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
+**Language:** __LANGUAGE__
+**Style:** __STYLE__
+**Focus:** __FOCUS__
+**Summary:** __SUMMARY__
+**Book Contract:** The complete book targets ~__BOOK_WORD_TARGET__ words total across all chapters.
+**Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words.
+**Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
+**Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.
+**Formatting:** Plain paragraphs. No bold. No headers.
+**Paragraphing (critical for layout):** Write like a printed book chapter, not chat.
+- **Vary paragraph length deliberately.** Mix shorter paragraphs (often **3-5 sentences**, about **2–3 printed lines**) with medium and longer ones. Do **not** settle into a steady rhythm where every paragraph is the same size.
+- **Short paragraphs are allowed** for emphasis, a turn in thought, or a breath between ideas—use them **sometimes**, not after every sentence.
+- Longer paragraphs are fine when the idea needs room; neighbor paragraphs may be much shorter so the page does not look like uniform blocks.
+- Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.
+- Use **double newlines (blank line)** ONLY between **major sections**. **At most 8–10 double-newlines in the whole chapter.**
+**Output Rule:** Return only final chapter prose.
+**Data:** __ASTROLOGY_DATA__"""
+
+
+def get_chapter_prompt_template() -> str:
+    try:
+        return ssm_client.get_parameter(Name=CHAPTER_PROMPT_SSM_NAME, WithDecryption=True)[
+            "Parameter"
+        ]["Value"]
+    except Exception as e:
+        print(f"SSM chapter prompt not found; using fallback: {e}")
+        return CHAPTER_PROMPT_FALLBACK
+
+
+def render_chapter_prompt(
+    template: str,
+    chapter_num: int,
+    title: str,
+    language: str,
+    style: str,
+    focus: str,
+    description: str,
+    word_target: int,
+    astrology_data: dict,
+    chapter_theme: str | None = None,
+) -> str:
+    """Substitute SSM chapter template tokens (legacy + current naming)."""
+    theme = (chapter_theme or title).strip() or title
+    astrology_json = json.dumps(astrology_data, ensure_ascii=False)
+    replacements = {
+        "__CHAPTER_NUM__": str(chapter_num),
+        "__CHAPTER_TITLE__": title,
+        "__CHAPTER_THEME__": theme,
+        "__LANGUAGE__": language,
+        "__STYLE__": style,
+        "__DYNAMIC_STYLE__": style,
+        "__FOCUS__": focus,
+        "__SUMMARY__": description,
+        "__CHAPTER_SUMMARY__": description,
+        "__BOOK_WORD_TARGET__": str(BOOK_WORD_TARGET),
+        "__WORD_TARGET__": str(word_target),
+        "__CHAPTER_WORD_MIN__": str(CHAPTER_WORD_MIN),
+        "__CHAPTER_WORD_MAX__": str(CHAPTER_WORD_MAX),
+        "__ASTROLOGY_DATA__": astrology_json,
+        "__NATAL_CHART__": astrology_json,
+    }
+    rendered = template
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    leftover = sorted(set(re.findall(r"__[A-Z0-9_]+__", rendered)))
+    if leftover:
+        print(
+            f"WARNING: chapter prompt still has unreplaced placeholders "
+            f"for chapter {chapter_num}: {leftover}"
+        )
+    return rendered
 
 
 def _extract_text_from_responses_body_dict(body: dict) -> str:
@@ -149,6 +227,10 @@ async def generate_section(name, description, style, language):
     Language: {language}
     Style: {style}
     Context: {description}
+    **Word Contract:** Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
+    **Length Rule:** Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
+    **Layout Rule:** This section must fit on two printed pages. End with a complete sentence.
+    **Paragraphing:** Plain paragraphs only. Use at most 3-4 paragraph breaks (double newlines) in the whole section.
     STRICT RULES:
     - Output ONLY body text.
     - No headings or titles.
@@ -165,8 +247,11 @@ async def generate_section(name, description, style, language):
             reasoning={"effort": REASONING_EFFORT_ARCHITECT},
             max_output_tokens=SECTION_MAX_OUTPUT_TOKENS,
         )
+        if getattr(resp, "status", None) == "incomplete":
+            print(f"WARNING: {name} response incomplete: {getattr(resp, 'incomplete_details', None)}")
         text = _response_text_from_obj(resp).strip()
-        print(f"✅ {name} SUCCESS: {len(text)} chars")
+        word_count = len(text.split())
+        print(f"✅ {name} SUCCESS: {word_count} words, {len(text)} chars")
         return text
     except Exception as e:
         print(f"❌ Error generating {name}: {e}")
@@ -202,36 +287,35 @@ def build_style_chart_snapshot(astrology_data):
     }
 
 
-def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, language, word_target):
+def build_chapter_batch_tasks(
+    chapters_list,
+    astrology_data,
+    focus,
+    style,
+    language,
+    word_target,
+    chapter_prompt_template: str,
+):
     tasks = []
     manifest = {}
     for idx, ch in enumerate(chapters_list):
         chapter_num = idx + 1
         title = ch["title"]
         description = ch["description"]
+        chapter_theme = ch.get("theme") or title
         custom_id = f"chapter-{chapter_num}"
 
-        prompt = (
-            f'Write Chapter {chapter_num}: "{title}".\n'
-            f"**Language:** {language}\n"
-            f"**Style:** {style}\n"
-            f"**Focus:** {focus}\n"
-            f"**Summary:** {description}\n"
-            f"**Book Contract:** The complete book targets ~{BOOK_WORD_TARGET} words total across all chapters.\n"
-            f"**Word Contract:** Target {word_target} words for this chapter. Mandatory range {CHAPTER_WORD_MIN}-{CHAPTER_WORD_MAX} words.\n"
-            f"**Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.\n"
-            f"**Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, "
-            f"(5) shadow expression, (6) reframing, (7) practical integration prompts.\n"
-            f"**Formatting:** Plain paragraphs. No bold. No headers.\n"
-            f"**Paragraphing (critical for layout):** Write like a printed book chapter, not chat.\n"
-            f"- **Vary paragraph length deliberately.** Mix shorter paragraphs (often **3-5 sentences**, about **2–3 printed lines**) with medium and longer ones. "
-            f"Do **not** settle into a steady rhythm where every paragraph is the same size.\n"
-            f"- **Short paragraphs are allowed** for emphasis, a turn in thought, or a breath between ideas—use them **sometimes**, not after every sentence.\n"
-            f"- Longer paragraphs are fine when the idea needs room; neighbor paragraphs may be much shorter so the page does not look like uniform blocks.\n"
-            f"- Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.\n"
-            f"- Use **double newlines (blank line)** ONLY between **major sections**. **At most 8–10 double-newlines in the whole chapter.**\n"
-            f"**Output Rule:** Return only final chapter prose.\n"
-            f"**Data:** {json.dumps(astrology_data)}"
+        prompt = render_chapter_prompt(
+            chapter_prompt_template,
+            chapter_num,
+            title,
+            language,
+            style,
+            focus,
+            description,
+            word_target,
+            astrology_data,
+            chapter_theme=chapter_theme,
         )
 
         tasks.append(
@@ -567,7 +651,7 @@ async def prepare_style_and_sections(chart, structure, focus, language):
 
     preface_text = await generate_section("Preface", preface_desc, style, language)
     prologue_text = await generate_section("Prologue", prologue_desc, style, language)
-
+# 
     return {
         "style": style,
         "preface_text": preface_text,
@@ -598,22 +682,19 @@ async def op_submit_text_batch(payload: dict) -> dict:
 
     chart = s3_get_json(payload["astrology_json_s3_path"])
     structure = s3_get_json(payload["book_structure_s3_path"])
-
-    try:
-        image_prompt_template = ssm_client.get_parameter(
-            Name="/AstrologyBookFactory/prompts/writer/image",
-            WithDecryption=True,
-        )["Parameter"]["Value"]
-    except Exception:
-        print("SSM image prompt not found; using fallback.")
-        image_prompt_template = IMAGE_PROMPT_FALLBACK
-
     sections = await prepare_style_and_sections(chart, structure, focus, language)
 
     struct_inner = structure.get("structure", {})
     chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
+    chapter_prompt_template = get_chapter_prompt_template()
     tasks, manifest = build_chapter_batch_tasks(
-        chapters_list, chart, focus, sections["style"], language, CHAPTER_WORD_TARGET
+        chapters_list,
+        chart,
+        focus,
+        sections["style"],
+        language,
+        CHAPTER_WORD_TARGET,
+        chapter_prompt_template,
     )
 
     save_state(prefix, "text_manifest.json", manifest)
@@ -1019,8 +1100,15 @@ async def legacy_full_pipeline(payload):
 
     struct_inner = structure.get("structure", {})
     chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
+    chapter_prompt_template = get_chapter_prompt_template()
     tasks, manifest = build_chapter_batch_tasks(
-        chapters_list, chart, focus, style, language, CHAPTER_WORD_TARGET
+        chapters_list,
+        chart,
+        focus,
+        style,
+        language,
+        CHAPTER_WORD_TARGET,
+        chapter_prompt_template,
     )
 
     batch_id = submit_batch(sync_openai_client, tasks, BATCH_ENDPOINT_RESPONSES, "chapter_text")

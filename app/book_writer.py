@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_TEXT = "gpt-5.2-2025-12-11"
+MODEL_TEXT = "gpt-5.4-mini-2026-03-17"
 MODEL_IMAGE = "dall-e-3"
 
 async def generate_chapter_image(chapter_summary: str) -> str:

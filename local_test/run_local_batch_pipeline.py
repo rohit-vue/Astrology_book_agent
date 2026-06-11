@@ -59,7 +59,10 @@ TEXT_VERBOSITY_STYLE = "low"
 STYLE_MAX_OUTPUT_TOKENS = 600
 
 # Preface / prologue / epilogue (GPT-5.5, same depth settings as architect)
-SECTION_MAX_OUTPUT_TOKENS = 1000
+SECTION_MAX_OUTPUT_TOKENS = 4000
+SECTION_WORD_TARGET = 550
+SECTION_WORD_MIN = 500
+SECTION_WORD_MAX = 600
 IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = 200
 
 BATCH_POLL_INTERVAL = 15  # seconds between status checks
@@ -839,6 +842,11 @@ async def generate_section(client, name, description, style, language):
     Style: {style}
     Context: {description}
 
+    **Word Contract:** Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
+    **Length Rule:** Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
+    **Layout Rule:** This section must fit on two printed pages. End with a complete sentence.
+    **Paragraphing:** Plain paragraphs only. Use at most 3-4 paragraph breaks (double newlines) in the whole section.
+
     STRICT RULES:
     - Output ONLY body text.
     - No headings or titles.
@@ -855,8 +863,11 @@ async def generate_section(client, name, description, style, language):
             reasoning={"effort": REASONING_EFFORT_ARCHITECT},
             max_output_tokens=SECTION_MAX_OUTPUT_TOKENS,
         )
+        if getattr(resp, "status", None) == "incomplete":
+            print(f"  WARNING: {name} response incomplete: {getattr(resp, 'incomplete_details', None)}")
         text = _response_text_from_obj(resp).strip()
-        print(f"  {name} done: {len(text)} chars")
+        word_count = len(text.split())
+        print(f"  {name} done: {word_count} words, {len(text)} chars")
         return text
     except Exception as e:
         print(f"  Error generating {name}: {e}")

@@ -158,7 +158,7 @@ def save_book_as_pdf(
             client = openai.OpenAI(api_key=openai_api_key)
             trans_prompt = f"Translate the following text into {language}. Maintain the poetic, warm, and serious tone. Do not add commentary.\n\nTEXT:\n{foreword_text}"
             trans_resp = client.chat.completions.create(
-                model="gpt-5.2-2025-12-11",
+                model="gpt-5.4-mini-2026-03-17",
                 messages=[{"role": "user", "content": trans_prompt}],
                 temperature=0.3
             )

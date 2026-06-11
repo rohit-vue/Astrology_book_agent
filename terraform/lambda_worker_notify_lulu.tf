@@ -47,6 +47,7 @@ resource "aws_lambda_function" "notify_lulu" {
   handler      = "app.lambda_handler"
   runtime      = "python3.11"
   timeout      = 120
+  memory_size  = 256
 
   filename         = data.archive_file.notify_lulu_code.output_path
   source_code_hash = data.archive_file.notify_lulu_code.output_base64sha256

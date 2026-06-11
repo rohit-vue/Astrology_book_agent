@@ -65,27 +65,27 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
 
 resource "aws_ssm_parameter" "writer_chapter_prompt" {
   name        = "/AstrologyBookFactory/prompts/writer/chapter"
-  description = "Main prompt for writing a single chapter"
+  description = "Main prompt for writing a single chapter (batch text track)"
   type        = "SecureString"
   value       = <<-EOT
-    You are an expert writer composing the raw text for a book chapter.
-
-    **NON-NEGOTIABLE CORE DIRECTIVE:**
-    1.  Your entire response MUST be written in the second person ("you", "your").
-    2.  The VERY FIRST WORD of your response MUST be "You".
-    3.  **LANGUAGE:** You MUST write the entire text in **__LANGUAGE__**.
-
-    **GUIDING PARAMETERS:**
-    - **WRITING STYLE:** __DYNAMIC_STYLE__
-    - **CENTRAL BOOK FOCUS:** "__FOCUS__"
-    - **THIS CHAPTER'S THEME:** "__CHAPTER_THEME__"
-    - **THIS CHAPTER'S GOAL:** "__CHAPTER_SUMMARY__"
-
-    **YOUR TASK:**
-    Write a flowing and insightful chapter of approximately __WORD_TARGET__ words in **__LANGUAGE__**.
-
-    **User's Symbolic Data:**
-    __NATAL_CHART__
+Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
+**Language:** __LANGUAGE__
+**Style:** __STYLE__
+**Focus:** __FOCUS__
+**Summary:** __SUMMARY__
+**Book Contract:** The complete book targets ~__BOOK_WORD_TARGET__ words total across all chapters.
+**Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words.
+**Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
+**Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.
+**Formatting:** Plain paragraphs. No bold. No headers.
+**Paragraphing (critical for layout):** Write like a printed book chapter, not chat.
+- **Vary paragraph length deliberately.** Mix shorter paragraphs (often **3-5 sentences**, about **2–3 printed lines**) with medium and longer ones. Do **not** settle into a steady rhythm where every paragraph is the same size.
+- **Short paragraphs are allowed** for emphasis, a turn in thought, or a breath between ideas—use them **sometimes**, not after every sentence.
+- Longer paragraphs are fine when the idea needs room; neighbor paragraphs may be much shorter so the page does not look like uniform blocks.
+- Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.
+- Use **double newlines (blank line)** ONLY between **major sections**. **At most 8–10 double-newlines in the whole chapter.**
+**Output Rule:** Return only final chapter prose.
+**Data:** __ASTROLOGY_DATA__
   EOT
 }
 

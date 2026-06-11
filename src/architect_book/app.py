@@ -13,7 +13,7 @@ ARTIFACTS_BUCKET = os.environ.get('ARTIFACTS_BUCKET')
 openai_client = OpenAI(api_key="dummy") 
 
 # Updated model ID
-MODEL_ID = "gpt-5.2-2025-12-11"
+MODEL_ID = "gpt-5.4-mini-2026-03-17"
 
 ARCHITECT_SYSTEM_PROMPT_FALLBACK = """You are an ASI (Artificial Superintelligence) acting as a master psychological interpreter and book architect.
 Your persona is wise, insightful, and empathetic.
