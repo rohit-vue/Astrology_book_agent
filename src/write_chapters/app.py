@@ -55,6 +55,7 @@ SECTION_MAX_OUTPUT_TOKENS = _env_int("SECTION_MAX_OUTPUT_TOKENS", 4000)
 SECTION_WORD_TARGET = _env_int("SECTION_WORD_TARGET", 550)
 SECTION_WORD_MIN = _env_int("SECTION_WORD_MIN", 500)
 SECTION_WORD_MAX = _env_int("SECTION_WORD_MAX", 600)
+SECTION_GENERATION_MAX_RETRIES = _env_int("SECTION_GENERATION_MAX_RETRIES", 2)
 IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = _env_int("IMAGE_SUMMARY_MAX_OUTPUT_TOKENS", 200)
 
 BATCH_POLL_INTERVAL = _env_int("BATCH_POLL_INTERVAL", 15)
@@ -217,10 +218,25 @@ def s3_put_json(bucket, key, obj):
     )
 
 
-async def generate_section(name, description, style, language):
-    if not description:
-        return ""
-    print(f"Generating {name}...")
+def _section_text_is_valid(text) -> bool:
+    return bool(text and str(text).strip())
+
+
+def _section_descriptions_from_structure(structure: dict) -> tuple[str, str, str]:
+    struct_inner = structure.get("structure", {})
+    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or (
+        "Write a warm, welcoming preface setting the stage for a journey of self-discovery based on the user's astrology."
+    )
+    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or (
+        "Write an introduction that explains the core themes of the book and invites the reader to explore their inner world."
+    )
+    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or (
+        "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
+    )
+    return preface_desc, prologue_desc, epilogue_desc
+
+
+async def _generate_section_once(name, description, style, language):
     prompt = f"""
     Generate narrative prose content for a personal astrology book section.
     Section Type: {name}
@@ -239,23 +255,42 @@ async def generate_section(name, description, style, language):
     - Start directly with prose.
     - Second person POV ("You").
     """
-    try:
-        resp = await async_openai_client.responses.create(
-            model=MODEL_CONTENT,
-            input=[{"role": "user", "content": prompt}],
-            text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_ARCHITECT},
-            reasoning={"effort": REASONING_EFFORT_ARCHITECT},
-            max_output_tokens=SECTION_MAX_OUTPUT_TOKENS,
-        )
-        if getattr(resp, "status", None) == "incomplete":
-            print(f"WARNING: {name} response incomplete: {getattr(resp, 'incomplete_details', None)}")
-        text = _response_text_from_obj(resp).strip()
-        word_count = len(text.split())
-        print(f"✅ {name} SUCCESS: {word_count} words, {len(text)} chars")
-        return text
-    except Exception as e:
-        print(f"❌ Error generating {name}: {e}")
+    resp = await async_openai_client.responses.create(
+        model=MODEL_CONTENT,
+        input=[{"role": "user", "content": prompt}],
+        text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_ARCHITECT},
+        reasoning={"effort": REASONING_EFFORT_ARCHITECT},
+        max_output_tokens=SECTION_MAX_OUTPUT_TOKENS,
+    )
+    if getattr(resp, "status", None) == "incomplete":
+        print(f"WARNING: {name} response incomplete: {getattr(resp, 'incomplete_details', None)}")
+    return _response_text_from_obj(resp).strip()
+
+
+async def generate_section(name, description, style, language):
+    if not description:
         return ""
+    max_attempts = SECTION_GENERATION_MAX_RETRIES + 1
+    print(f"Generating {name}...")
+    for attempt in range(1, max_attempts + 1):
+        try:
+            text = await _generate_section_once(name, description, style, language)
+            if _section_text_is_valid(text):
+                word_count = len(text.split())
+                print(f"✅ {name} SUCCESS (attempt {attempt}/{max_attempts}): {word_count} words, {len(text)} chars")
+                return text
+            print(f"WARNING: {name} attempt {attempt}/{max_attempts} returned empty text; retrying...")
+        except Exception as e:
+            print(f"❌ Error generating {name} (attempt {attempt}/{max_attempts}): {e}")
+    print(f"ERROR: {name} failed after {max_attempts} attempts")
+    return ""
+
+
+async def ensure_section(name, description, style, language, existing=""):
+    if _section_text_is_valid(existing):
+        return str(existing).strip()
+    print(f"{name} missing or empty in saved state; regenerating...")
+    return await generate_section(name, description, style, language)
 
 
 def build_style_chart_snapshot(astrology_data):
@@ -638,20 +673,14 @@ async def prepare_style_and_sections(chart, structure, focus, language):
             "Avoid: generic filler; moralizing; vague advice; melodrama."
         )
 
-    struct_inner = structure.get("structure", {})
-    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or (
-        "Write a warm, welcoming preface setting the stage for a journey of self-discovery based on the user's astrology."
-    )
-    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or (
-        "Write an introduction that explains the core themes of the book and invites the reader to explore their inner world."
-    )
-    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or (
-        "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
-    )
+    preface_desc, prologue_desc, epilogue_desc = _section_descriptions_from_structure(structure)
 
     preface_text = await generate_section("Preface", preface_desc, style, language)
     prologue_text = await generate_section("Prologue", prologue_desc, style, language)
-# 
+    for section_name, section_text in (("Preface", preface_text), ("Prologue", prologue_text)):
+        if not _section_text_is_valid(section_text):
+            raise ValueError(f"{section_name} generation returned empty text after retries.")
+
     return {
         "style": style,
         "preface_text": preface_text,
@@ -1014,21 +1043,41 @@ async def op_finalize(payload: dict) -> dict:
             by_idx[idx]["image_url"] = url
 
     structure = s3_get_json(base["book_structure_s3_path"])
-    epilogue_desc = sections.get("epilogue_desc") or ""
+    style = sections.get("style", "")
+    language = base.get("language", "English")
+    preface_desc, prologue_desc, epilogue_desc = _section_descriptions_from_structure(structure)
+    epilogue_desc = sections.get("epilogue_desc") or epilogue_desc
 
-    epilogue_text = await generate_section("Epilogue", epilogue_desc, sections.get("style", ""), base.get("language", "English"))
+    preface_text = await ensure_section(
+        "Preface", preface_desc, style, language, sections.get("preface_text", "")
+    )
+    prologue_text = await ensure_section(
+        "Prologue", prologue_desc, style, language, sections.get("prologue_text", "")
+    )
+    epilogue_text = await ensure_section("Epilogue", epilogue_desc, style, language, "")
+
+    missing = [
+        name for name, text in (
+            ("Preface", preface_text),
+            ("Prologue", prologue_text),
+            ("Epilogue", epilogue_text),
+        )
+        if not _section_text_is_valid(text)
+    ]
+    if missing:
+        raise ValueError(f"Failed to generate section text after retries: {', '.join(missing)}")
 
     final_output = dict(base)
     final_output["full_book_structure"] = structure
     final_output["generated_sections"] = {
-        "preface": sections.get("preface_text", ""),
-        "prologue": sections.get("prologue_text", ""),
+        "preface": preface_text,
+        "prologue": prologue_text,
         # Foreword is sourced by generate_pdf from assets/foreword.txt.
         "foreword": "",
         "epilogue": epilogue_text,
     }
-    final_output["full_book_structure"]["preface_text"] = sections.get("preface_text", "")
-    final_output["full_book_structure"]["prologue_text"] = sections.get("prologue_text", "")
+    final_output["full_book_structure"]["preface_text"] = preface_text
+    final_output["full_book_structure"]["prologue_text"] = prologue_text
     final_output["full_book_structure"]["epilogue_text"] = epilogue_text
     if "metadata" not in final_output["full_book_structure"]:
         final_output["full_book_structure"]["metadata"] = structure.get(
@@ -1149,24 +1198,39 @@ async def legacy_full_pipeline(payload):
         chapters_data, image_prompt_template, order_id, line_item_id
     )
 
-    epilogue_text = await generate_section(
-        "Epilogue",
-        sections["epilogue_desc"],
-        style,
-        language,
+    preface_desc, prologue_desc, epilogue_desc = _section_descriptions_from_structure(structure)
+    epilogue_desc = sections.get("epilogue_desc") or epilogue_desc
+
+    preface_text = await ensure_section(
+        "Preface", preface_desc, style, language, sections.get("preface_text", "")
     )
+    prologue_text = await ensure_section(
+        "Prologue", prologue_desc, style, language, sections.get("prologue_text", "")
+    )
+    epilogue_text = await ensure_section("Epilogue", epilogue_desc, style, language, "")
+
+    missing = [
+        name for name, text in (
+            ("Preface", preface_text),
+            ("Prologue", prologue_text),
+            ("Epilogue", epilogue_text),
+        )
+        if not _section_text_is_valid(text)
+    ]
+    if missing:
+        raise ValueError(f"Failed to generate section text after retries: {', '.join(missing)}")
 
     final_output = payload
     final_output["full_book_structure"] = structure
     final_output["generated_sections"] = {
-        "preface": sections["preface_text"],
-        "prologue": sections["prologue_text"],
+        "preface": preface_text,
+        "prologue": prologue_text,
         # Foreword is sourced by generate_pdf from assets/foreword.txt.
         "foreword": "",
         "epilogue": epilogue_text,
     }
-    final_output["full_book_structure"]["preface_text"] = sections["preface_text"]
-    final_output["full_book_structure"]["prologue_text"] = sections["prologue_text"]
+    final_output["full_book_structure"]["preface_text"] = preface_text
+    final_output["full_book_structure"]["prologue_text"] = prologue_text
     final_output["full_book_structure"]["epilogue_text"] = epilogue_text
     if "metadata" not in final_output["full_book_structure"]:
         final_output["full_book_structure"]["metadata"] = structure.get(

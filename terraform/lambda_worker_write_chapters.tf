@@ -75,6 +75,7 @@ resource "aws_lambda_function" "write_chapters" {
       CHAPTER_WORD_MIN               = "7500"
       CHAPTER_WORD_MAX               = "8000"
       MAX_BATCH_RETRIES              = "3"
+      SECTION_GENERATION_MAX_RETRIES = "2"
     }
   }
 }
