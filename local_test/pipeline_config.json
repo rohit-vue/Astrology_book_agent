@@ -1,16 +1,16 @@
 {
-  "order_id": "LOCAL_TEST_001",
-  "line_item_id": "LOCAL_ITEM_001",
+  "order_id": "LOCAL_TEST_002",
+  "line_item_id": "LOCAL_ITEM_002",
   "birth_data": {
-    "day": 28,
-    "month": 11,
-    "year": 1999,
-    "hour": 1,
-    "min": 28,
-    "lat": 27.500407, 
-    "lon": 77.670203,
+    "day": 30,
+    "month": 3,
+    "year": 1995,
+    "hour": 18,
+    "min": 31,
+    "lat": 24.6879, 
+    "lon": 78.4120,
     "tzone": 5.5
   },
-  "focus": "Relationships",
-  "language": "French"
+  "focus": "Personality",
+  "language": "English"
 }

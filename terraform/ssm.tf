@@ -74,7 +74,7 @@ Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 **Focus:** __FOCUS__
 **Summary:** __SUMMARY__
 **Book Contract:** The complete book targets ~__BOOK_WORD_TARGET__ words total across all chapters.
-**Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words.
+**Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words (EXTREMELY IMPORTANT).
 **Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
 **Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.
 **Formatting:** Plain paragraphs. No bold. No headers.

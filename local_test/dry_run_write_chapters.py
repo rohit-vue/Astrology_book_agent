@@ -50,6 +50,7 @@ def _patch_for_dry_run():
 
     wc.save_state = dry_save_state
     wc.submit_batch = dry_submit_batch
+    wc.configure_openai = lambda: None
     return original_save, original_submit
 
 
@@ -101,11 +102,17 @@ async def main():
     template = wc.get_chapter_prompt_template()
     issues = _audit_prompts(tasks, template)
 
-    sections_path = os.path.join(DRY_STATE_DIR, "wc_sections.json")
-    with open(sections_path, encoding="utf-8") as f:
-        sections = json.load(f)
-    print(f"\nGenerated style ({len(sections.get('style', ''))} chars):")
-    print(sections.get("style", "")[:300])
+    meta_path = os.path.join(DRY_STATE_DIR, "wc_sections_meta.json")
+    with open(meta_path, encoding="utf-8") as f:
+        sections_meta = json.load(f)
+    section_manifest_path = os.path.join(DRY_STATE_DIR, "text_section_manifest.json")
+    with open(section_manifest_path, encoding="utf-8") as f:
+        section_manifest = json.load(f)
+
+    print(f"\nDeterministic style ({len(sections_meta.get('style', ''))} chars):")
+    print(sections_meta.get("style", "")[:300])
+    print(f"Section batch tasks: {len(section_manifest)} ({', '.join(section_manifest.keys())})")
+    print(f"Total batch tasks (chapters + sections): {len(tasks)}")
 
     if issues:
         print("\nPROMPT ISSUES:")

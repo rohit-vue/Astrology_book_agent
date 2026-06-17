@@ -37,7 +37,7 @@ resource "aws_lambda_function" "architect_book" {
   package_type = "Zip"
   handler      = "app.lambda_handler"
   runtime      = "python3.11" # Upgraded runtime
-  timeout      = 120
+  timeout      = 300
 
   filename         = data.archive_file.architect_book_code.output_path
   source_code_hash = data.archive_file.architect_book_code.output_base64sha256
@@ -48,8 +48,19 @@ resource "aws_lambda_function" "architect_book" {
 
   environment {
     variables = {
-      API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys_v2.arn
-      ARTIFACTS_BUCKET    = aws_s3_bucket.artifacts_bucket.id
+      API_KEYS_SECRET_ARN        = aws_secretsmanager_secret.api_keys_v2.arn
+      ARTIFACTS_BUCKET           = aws_s3_bucket.artifacts_bucket.id
+      MODEL_ARCHITECT              = "gpt-5.5"
+      REASONING_EFFORT_ARCHITECT   = "medium"
+      TEXT_VERBOSITY_ARCHITECT     = "medium"
+      ARCHITECT_MAX_OUTPUT_TOKENS  = "24000"
+      ARCHITECT_EXPECTED_CHAPTERS  = "7"
+      ARCHITECT_MAX_RETRIES        = "2"
+      OPENAI_TIMEOUT_SECONDS       = "120"
+      OPENAI_MAX_RETRIES           = "1"
+      AWS_CONNECT_TIMEOUT_SECONDS  = "3"
+      AWS_READ_TIMEOUT_SECONDS     = "30"
+      AWS_MAX_ATTEMPTS             = "2"
     }
   }
 }

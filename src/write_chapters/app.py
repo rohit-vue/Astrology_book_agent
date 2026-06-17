@@ -5,15 +5,9 @@ import asyncio
 import time
 import base64
 import re
+from botocore.config import Config
 from openai import AsyncOpenAI, OpenAI
 from urllib.parse import urlparse
-
-
-s3_client = boto3.client("s3")
-secrets_manager_client = boto3.client("secretsmanager")
-ssm_client = boto3.client("ssm")
-async_openai_client = AsyncOpenAI(api_key="dummy")
-sync_openai_client = OpenAI(api_key="dummy")
 
 API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
 ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET")
@@ -64,6 +58,43 @@ CHAPTER_WORD_TARGET = _env_int("CHAPTER_WORD_TARGET", 7750)
 CHAPTER_WORD_MIN = _env_int("CHAPTER_WORD_MIN", 7500)
 CHAPTER_WORD_MAX = _env_int("CHAPTER_WORD_MAX", 8000)
 MAX_BATCH_RETRIES = _env_int("MAX_BATCH_RETRIES", 1)
+IMAGE_MIN_BYTES = _env_int("IMAGE_MIN_BYTES", 50000)
+
+AWS_CONNECT_TIMEOUT_SECONDS = _env_int("AWS_CONNECT_TIMEOUT_SECONDS", 3)
+AWS_READ_TIMEOUT_SECONDS = _env_int("AWS_READ_TIMEOUT_SECONDS", 30)
+AWS_MAX_ATTEMPTS = _env_int("AWS_MAX_ATTEMPTS", 2)
+OPENAI_TIMEOUT_SECONDS = _env_int("OPENAI_TIMEOUT_SECONDS", 90)
+OPENAI_MAX_RETRIES = _env_int("OPENAI_MAX_RETRIES", 1)
+ALLOW_LEGACY_PIPELINE = os.environ.get("ALLOW_LEGACY_PIPELINE", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
+_aws_config = Config(
+    connect_timeout=AWS_CONNECT_TIMEOUT_SECONDS,
+    read_timeout=AWS_READ_TIMEOUT_SECONDS,
+    retries={"max_attempts": AWS_MAX_ATTEMPTS, "mode": "standard"},
+    max_pool_connections=20,
+)
+s3_client = boto3.client("s3", config=_aws_config)
+secrets_manager_client = boto3.client("secretsmanager", config=_aws_config)
+ssm_client = boto3.client("ssm", config=_aws_config)
+async_openai_client = AsyncOpenAI(
+    api_key="dummy",
+    timeout=OPENAI_TIMEOUT_SECONDS,
+    max_retries=OPENAI_MAX_RETRIES,
+)
+sync_openai_client = OpenAI(
+    api_key="dummy",
+    timeout=OPENAI_TIMEOUT_SECONDS,
+    max_retries=OPENAI_MAX_RETRIES,
+)
+
+_openai_configured = False
+_chapter_prompt_template_cache: str | None = None
+_image_prompt_template_cache: str | None = None
 
 IMAGE_PROMPT_FALLBACK = (
     "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. "
@@ -71,13 +102,14 @@ IMAGE_PROMPT_FALLBACK = (
 )
 
 CHAPTER_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/chapter"
+IMAGE_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/image"
 CHAPTER_PROMPT_FALLBACK = """Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 **Language:** __LANGUAGE__
 **Style:** __STYLE__
 **Focus:** __FOCUS__
 **Summary:** __SUMMARY__
 **Book Contract:** The complete book targets ~__BOOK_WORD_TARGET__ words total across all chapters.
-**Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words.
+**Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words(EXTREMELY IMPORTANT).
 **Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
 **Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.
 **Formatting:** Plain paragraphs. No bold. No headers.
@@ -92,13 +124,31 @@ CHAPTER_PROMPT_FALLBACK = """Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 
 
 def get_chapter_prompt_template() -> str:
+    global _chapter_prompt_template_cache
+    if _chapter_prompt_template_cache:
+        return _chapter_prompt_template_cache
     try:
-        return ssm_client.get_parameter(Name=CHAPTER_PROMPT_SSM_NAME, WithDecryption=True)[
-            "Parameter"
-        ]["Value"]
+        _chapter_prompt_template_cache = ssm_client.get_parameter(
+            Name=CHAPTER_PROMPT_SSM_NAME, WithDecryption=True
+        )["Parameter"]["Value"]
     except Exception as e:
         print(f"SSM chapter prompt not found; using fallback: {e}")
-        return CHAPTER_PROMPT_FALLBACK
+        _chapter_prompt_template_cache = CHAPTER_PROMPT_FALLBACK
+    return _chapter_prompt_template_cache
+
+
+def get_image_prompt_template() -> str:
+    global _image_prompt_template_cache
+    if _image_prompt_template_cache:
+        return _image_prompt_template_cache
+    try:
+        _image_prompt_template_cache = ssm_client.get_parameter(
+            Name=IMAGE_PROMPT_SSM_NAME, WithDecryption=True
+        )["Parameter"]["Value"]
+    except Exception as e:
+        print(f"SSM image prompt not found; using fallback: {e}")
+        _image_prompt_template_cache = IMAGE_PROMPT_FALLBACK
+    return _image_prompt_template_cache
 
 
 def render_chapter_prompt(
@@ -177,7 +227,13 @@ def _response_text_from_obj(resp) -> str:
 
 def unwrap_payload(event):
     """Step Functions lambda:invoke wraps handler return in Payload; nested tasks may repeat."""
-    return event.get("Payload", event)
+    payload = event
+    for _ in range(5):
+        if isinstance(payload, dict) and "Payload" in payload and isinstance(payload["Payload"], dict):
+            payload = payload["Payload"]
+        else:
+            break
+    return payload
 
 
 def state_prefix(order_id: str, line_item_id: str) -> str:
@@ -219,7 +275,84 @@ def s3_put_json(bucket, key, obj):
 
 
 def _section_text_is_valid(text) -> bool:
-    return bool(text and str(text).strip())
+    ok, _ = _validate_section_text(text)
+    return ok
+
+
+def _word_count(text: str) -> int:
+    return len(str(text or "").split())
+
+
+def _text_ends_complete_sentence(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    while stripped and stripped[-1] in '"\'”’»)':
+        stripped = stripped[:-1].rstrip()
+    return bool(stripped) and stripped[-1] in ".!?"
+
+
+def _batch_body_is_incomplete(body: dict) -> bool:
+    if not isinstance(body, dict):
+        return False
+    if body.get("status") == "incomplete":
+        return True
+    return bool(body.get("incomplete_details"))
+
+
+def _validate_chapter_text(text) -> tuple[bool, str]:
+    if not text or not str(text).strip():
+        return False, "empty text"
+    wc = _word_count(text)
+    if wc < CHAPTER_WORD_MIN:
+        return False, f"word count {wc} below minimum {CHAPTER_WORD_MIN}"
+    if not _text_ends_complete_sentence(text):
+        return False, "text does not end with a complete sentence"
+    return True, ""
+
+
+def _validate_section_text(text) -> tuple[bool, str]:
+    if not text or not str(text).strip():
+        return False, "empty text"
+    wc = _word_count(text)
+    if wc < SECTION_WORD_MIN:
+        return False, f"word count {wc} below minimum {SECTION_WORD_MIN}"
+    if not _text_ends_complete_sentence(text):
+        return False, "text does not end with a complete sentence"
+    return True, ""
+
+
+def _validate_image_bytes(raw: bytes) -> tuple[bool, str]:
+    size = len(raw or b"")
+    if size < IMAGE_MIN_BYTES:
+        return False, f"image too small ({size} bytes, minimum {IMAGE_MIN_BYTES})"
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False, "not a valid PNG file"
+    return True, ""
+
+
+def filter_valid_text_results(
+    merged: dict,
+    chapter_manifest: dict,
+    section_manifest: dict,
+) -> tuple[dict, set[str]]:
+    """Drop invalid chapter/section texts and return ids that should be retried."""
+    invalid_ids: set[str] = set()
+    for custom_id in list(merged.keys()):
+        text = merged.get(custom_id)
+        if custom_id in chapter_manifest:
+            ok, reason = _validate_chapter_text(text)
+            label = custom_id
+        elif custom_id in section_manifest:
+            ok, reason = _validate_section_text(text)
+            label = custom_id
+        else:
+            continue
+        if not ok:
+            print(f"VALIDATION FAIL {label}: {reason}")
+            invalid_ids.add(custom_id)
+            merged.pop(custom_id, None)
+    return merged, invalid_ids
 
 
 def _section_descriptions_from_structure(structure: dict) -> tuple[str, str, str]:
@@ -234,6 +367,89 @@ def _section_descriptions_from_structure(structure: dict) -> tuple[str, str, str
         "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
     )
     return preface_desc, prologue_desc, epilogue_desc
+
+
+def default_style(focus: str, language: str) -> str:
+    return (
+        f"Language: {language}. "
+        f"Focus: {focus}. "
+        "Tone: Warm, psychologically precise, compassionate, direct second-person. "
+        "Voice rules: concrete language; grounded interpretation; practical guidance; "
+        "emotionally honest pacing; no fluff. "
+        "Avoid: generic filler; moralizing; vague advice; melodrama."
+    )
+
+
+def _section_batch_prompt(name: str, description: str, style: str, language: str) -> str:
+    return f"""Generate narrative prose content for a personal astrology book section.
+Section Type: {name}
+Language: {language}
+Style: {style}
+Context: {description}
+Word Contract: Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
+Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
+Layout Rule: This section must fit on two printed pages. End with a complete sentence.
+Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
+STRICT RULES:
+- Output only body text.
+- No headings or titles.
+- No markdown.
+- No labels.
+- Start directly with prose.
+- Use second person POV."""
+
+
+def build_section_batch_tasks(structure: dict, style: str, language: str):
+    preface_desc, prologue_desc, epilogue_desc = _section_descriptions_from_structure(structure)
+    section_specs = [
+        ("section-preface", "Preface", preface_desc),
+        ("section-prologue", "Prologue", prologue_desc),
+        ("section-epilogue", "Epilogue", epilogue_desc),
+    ]
+    tasks = []
+    manifest = {}
+    for custom_id, name, description in section_specs:
+        prompt = _section_batch_prompt(name, description, style, language)
+        tasks.append(
+            {
+                "custom_id": custom_id,
+                "method": "POST",
+                "url": BATCH_ENDPOINT_RESPONSES,
+                "body": {
+                    "model": MODEL_CONTENT,
+                    "input": [{"role": "user", "content": prompt}],
+                    "text": {
+                        "format": {"type": "text"},
+                        "verbosity": TEXT_VERBOSITY_ARCHITECT,
+                    },
+                    "reasoning": {"effort": REASONING_EFFORT_ARCHITECT},
+                    "max_output_tokens": SECTION_MAX_OUTPUT_TOKENS,
+                },
+            }
+        )
+        manifest[custom_id] = {"section_name": name.lower(), "description": description}
+    return tasks, manifest, epilogue_desc
+
+
+def _load_text_manifests(prefix: str) -> tuple[dict, dict]:
+    chapter_manifest = load_state(prefix, "text_chapter_manifest.json") or {}
+    section_manifest = load_state(prefix, "text_section_manifest.json") or {}
+    if not chapter_manifest:
+        chapter_manifest = load_state(prefix, "text_manifest.json") or {}
+    return chapter_manifest, section_manifest
+
+
+def _sections_from_batch_results(merged: dict, section_manifest: dict, sections_meta: dict) -> dict:
+    section_results = {}
+    for custom_id, meta in section_manifest.items():
+        section_name = meta["section_name"]
+        text = merged.get(custom_id, "")
+        if text:
+            section_results[f"{section_name}_text"] = text
+    return {
+        **sections_meta,
+        **section_results,
+    }
 
 
 async def _generate_section_once(name, description, style, language):
@@ -432,6 +648,10 @@ def collect_chapter_batch_results(client, batch):
             failed_ids.add(custom_id)
             continue
         body = response.get("body") or {}
+        if _batch_body_is_incomplete(body):
+            print(f"VALIDATION FAIL {custom_id}: batch response status incomplete")
+            failed_ids.add(custom_id)
+            continue
         chapter_text = _extract_text_from_responses_body_dict(body)
         if not chapter_text and isinstance(body, dict) and body.get("choices"):
             try:
@@ -565,8 +785,75 @@ def collect_image_batch_results(client, batch):
             failed_ids.add(custom_id)
             continue
         image_bytes_by_id[custom_id] = base64.b64decode(data_items[0]["b64_json"])
+        ok, reason = _validate_image_bytes(image_bytes_by_id[custom_id])
+        if not ok:
+            print(f"VALIDATION FAIL {custom_id}: {reason}")
+            failed_ids.add(custom_id)
+            del image_bytes_by_id[custom_id]
 
     return image_bytes_by_id, failed_ids
+
+
+def collect_and_store_image_results(client, batch, manifest, order_id, line_item_id, existing_keys=None):
+    if not batch.output_file_id:
+        raise RuntimeError(f"Image batch {batch.id} has no output file (status={batch.status})")
+    result_content = client.files.content(batch.output_file_id).content
+    s3_keys_by_id = dict(existing_keys or {})
+    failed_ids = set()
+
+    for line in result_content.decode("utf-8").strip().split("\n"):
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        custom_id = entry["custom_id"]
+        if custom_id in s3_keys_by_id:
+            continue
+        response = entry.get("response")
+        error = entry.get("error")
+        if error:
+            failed_ids.add(custom_id)
+            continue
+        if not response or response.get("status_code") != 200:
+            failed_ids.add(custom_id)
+            continue
+        data_items = response.get("body", {}).get("data", [])
+        b64 = data_items[0].get("b64_json") if data_items else None
+        if not b64:
+            failed_ids.add(custom_id)
+            continue
+        raw = base64.b64decode(b64)
+        ok, reason = _validate_image_bytes(raw)
+        if not ok:
+            print(f"VALIDATION FAIL {custom_id}: {reason}")
+            failed_ids.add(custom_id)
+            continue
+        idx = manifest[custom_id]["chapter_index"]
+        key = f"chapter-images/{order_id}/{line_item_id}/chapter_{idx}.png"
+        s3_client.put_object(
+            Bucket=ARTIFACTS_BUCKET,
+            Key=key,
+            Body=raw,
+            ContentType="image/png",
+        )
+        s3_keys_by_id[custom_id] = key
+
+    return s3_keys_by_id, failed_ids
+
+
+def _presigned_urls_from_s3_keys(s3_keys_by_id, manifest):
+    urls_by_index = {}
+    for custom_id, key in s3_keys_by_id.items():
+        info = manifest.get(custom_id)
+        if not info:
+            continue
+        idx = info["chapter_index"]
+        image_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": ARTIFACTS_BUCKET, "Key": key},
+            ExpiresIn=86400,
+        )
+        urls_by_index[str(idx)] = image_url
+    return urls_by_index
 
 
 def apply_images_to_chapters(chapters_data, image_manifest, image_bytes_by_id, order_id, line_item_id):
@@ -625,10 +912,16 @@ async def generate_chapter_images_batch(chapters_data, image_prompt_template, or
 
 
 def configure_openai():
+    global _openai_configured
+    if _openai_configured:
+        return
     secret = secrets_manager_client.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
     api_key = json.loads(secret["SecretString"]).get("OpenAIKey")
+    if not api_key:
+        raise ValueError("OpenAIKey missing from API key secret.")
     async_openai_client.api_key = api_key
     sync_openai_client.api_key = api_key
+    _openai_configured = True
 
 
 async def prepare_style_and_sections(chart, structure, focus, language):
@@ -711,24 +1004,29 @@ async def op_submit_text_batch(payload: dict) -> dict:
 
     chart = s3_get_json(payload["astrology_json_s3_path"])
     structure = s3_get_json(payload["book_structure_s3_path"])
-    sections = await prepare_style_and_sections(chart, structure, focus, language)
+    style = default_style(focus, language)
 
     struct_inner = structure.get("structure", {})
     chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
     chapter_prompt_template = get_chapter_prompt_template()
-    tasks, manifest = build_chapter_batch_tasks(
+    chapter_tasks, chapter_manifest = build_chapter_batch_tasks(
         chapters_list,
         chart,
         focus,
-        sections["style"],
+        style,
         language,
         CHAPTER_WORD_TARGET,
         chapter_prompt_template,
     )
+    section_tasks, section_manifest, epilogue_desc = build_section_batch_tasks(
+        structure, style, language
+    )
+    tasks = chapter_tasks + section_tasks
 
-    save_state(prefix, "text_manifest.json", manifest)
+    save_state(prefix, "text_chapter_manifest.json", chapter_manifest)
+    save_state(prefix, "text_section_manifest.json", section_manifest)
+    save_state(prefix, "wc_sections_meta.json", {"style": style, "epilogue_desc": epilogue_desc})
     save_state(prefix, "text_tasks.json", {"tasks": tasks})
-    save_state(prefix, "wc_sections.json", sections)
     save_state(prefix, "wc_structure_snapshot.json", {"chapters_list": chapters_list})
 
     batch_id = submit_batch(sync_openai_client, tasks, BATCH_ENDPOINT_RESPONSES, "chapter_text")
@@ -789,7 +1087,8 @@ async def op_collect_text_results(payload: dict) -> dict:
     prefix = state_prefix(order_id, line_item_id)
 
     pipe = load_state(prefix, "text_pipeline.json") or {}
-    manifest = load_state(prefix, "text_manifest.json") or {}
+    chapter_manifest, section_manifest = _load_text_manifests(prefix)
+    sections_meta = load_state(prefix, "wc_sections_meta.json") or {}
     batch_id = pipe.get("current_batch_id")
 
     batch = sync_openai_client.batches.retrieve(batch_id)
@@ -799,10 +1098,12 @@ async def op_collect_text_results(payload: dict) -> dict:
     merged = pipe.get("merged_results_by_id") or {}
     new_results, failed_ids = collect_chapter_batch_results(sync_openai_client, batch)
     merged.update(new_results)
+    merged, invalid_ids = filter_valid_text_results(merged, chapter_manifest, section_manifest)
 
     retry_count = int(pipe.get("retry_count") or 0)
-    missing_ids = set(manifest.keys()) - set(merged.keys())
-    failed_custom = (failed_ids | missing_ids) & set(manifest.keys())
+    expected_ids = set(chapter_manifest.keys()) | set(section_manifest.keys())
+    missing_ids = expected_ids - set(merged.keys())
+    failed_custom = (failed_ids | missing_ids | invalid_ids) & expected_ids
 
     save_state(prefix, "text_pipeline.json", {
         **pipe,
@@ -842,10 +1143,38 @@ async def op_collect_text_results(payload: dict) -> dict:
             "wc_text_collect_complete": False,
         }
 
-    chapters_data = build_chapters_data_from_results(merged, manifest, order_id, line_item_id)
+    chapter_results = {
+        custom_id: text for custom_id, text in merged.items() if custom_id in chapter_manifest
+    }
+    chapters_data = build_chapters_data_from_results(
+        chapter_results, chapter_manifest, order_id, line_item_id
+    )
+    missing_chapters = set(chapter_manifest.keys()) - set(chapter_results.keys())
+    if missing_chapters:
+        raise ValueError(
+            "Chapter text validation failed after retries; missing or invalid: "
+            + ", ".join(sorted(missing_chapters))
+        )
     if not chapters_data:
         raise ValueError("No chapter texts were produced by batch jobs.")
 
+    sections = _sections_from_batch_results(merged, section_manifest, sections_meta)
+    missing_sections = [
+        name
+        for name, key in (
+            ("Preface", "preface_text"),
+            ("Prologue", "prologue_text"),
+            ("Epilogue", "epilogue_text"),
+        )
+        if not _section_text_is_valid(sections.get(key))
+    ]
+    if missing_sections:
+        raise ValueError(
+            "Section text validation failed after retries; missing or invalid: "
+            + ", ".join(missing_sections)
+        )
+
+    save_state(prefix, "wc_sections.json", sections)
     save_state(prefix, "text_chapters_data.json", {"chapters_data": chapters_data})
 
     return {
@@ -862,13 +1191,7 @@ async def op_submit_image_batch(payload: dict) -> dict:
     line_item_id = payload["line_item_id"]
     prefix = state_prefix(order_id, line_item_id)
 
-    try:
-        image_prompt_template = ssm_client.get_parameter(
-            Name="/AstrologyBookFactory/prompts/writer/image",
-            WithDecryption=True,
-        )["Parameter"]["Value"]
-    except Exception:
-        image_prompt_template = IMAGE_PROMPT_FALLBACK
+    image_prompt_template = get_image_prompt_template()
 
     structure = s3_get_json(payload["book_structure_s3_path"])
     struct_inner = structure.get("structure", {})
@@ -883,7 +1206,7 @@ async def op_submit_image_batch(payload: dict) -> dict:
         prefix,
         "image_pipeline.json",
         {
-            "merged_images_b64_by_id": {},
+            "image_s3_keys_by_id": {},
             "failed_custom_ids": [],
             "current_batch_id": batch_id,
             "retry_count": 0,
@@ -951,13 +1274,18 @@ async def op_collect_image_results(payload: dict) -> dict:
             "wc_image_track_need_wait": False,
         }
 
-    merged_b64 = pipe.get("merged_images_b64_by_id") or {}
-    merged = {k: base64.b64decode(v) for k, v in merged_b64.items()}
-    new_images, failed_ids = collect_image_batch_results(sync_openai_client, batch)
-    merged.update(new_images)
+    existing_keys = dict(pipe.get("image_s3_keys_by_id") or {})
+    merged_keys, failed_ids = collect_and_store_image_results(
+        sync_openai_client,
+        batch,
+        manifest,
+        order_id,
+        line_item_id,
+        existing_keys=existing_keys,
+    )
 
     retry_count = int(pipe.get("retry_count") or 0)
-    missing_ids = set(manifest.keys()) - set(merged.keys())
+    missing_ids = set(manifest.keys()) - set(merged_keys.keys())
     failed_custom = (failed_ids | missing_ids) & set(manifest.keys())
 
     if failed_custom and retry_count < MAX_BATCH_RETRIES:
@@ -971,13 +1299,12 @@ async def op_collect_image_results(payload: dict) -> dict:
             "/v1/images/generations",
             f"chapter_image_retry_{retry_count}",
         )
-        merged_b64_out = {k: base64.b64encode(v).decode("ascii") for k, v in merged.items()}
         save_state(
             prefix,
             "image_pipeline.json",
             {
                 **pipe,
-                "merged_images_b64_by_id": merged_b64_out,
+                "image_s3_keys_by_id": merged_keys,
                 "failed_custom_ids": sorted(failed_custom),
                 "current_batch_id": new_batch_id,
                 "retry_count": retry_count,
@@ -991,21 +1318,7 @@ async def op_collect_image_results(payload: dict) -> dict:
             "wc_image_collect_complete": False,
         }
 
-    urls_by_index = {}
-    for custom_id, info in manifest.items():
-        idx = info["chapter_index"]
-        raw = merged.get(custom_id)
-        if raw is None:
-            continue
-        key = f"chapter-images/{order_id}/{line_item_id}/chapter_{idx}.png"
-        s3_client.put_object(Bucket=ARTIFACTS_BUCKET, Key=key, Body=raw, ContentType="image/png")
-        image_url = s3_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": ARTIFACTS_BUCKET, "Key": key},
-            ExpiresIn=86400,
-        )
-        urls_by_index[str(idx)] = image_url
-
+    urls_by_index = _presigned_urls_from_s3_keys(merged_keys, manifest)
     save_state(prefix, "image_urls_by_index.json", urls_by_index)
 
     return {
@@ -1017,7 +1330,6 @@ async def op_collect_image_results(payload: dict) -> dict:
 
 
 async def op_finalize(payload: dict) -> dict:
-    configure_openai()
     order_id = payload["order_id"]
     line_item_id = payload["line_item_id"]
     prefix = state_prefix(order_id, line_item_id)
@@ -1043,21 +1355,13 @@ async def op_finalize(payload: dict) -> dict:
             by_idx[idx]["image_url"] = url
 
     structure = s3_get_json(base["book_structure_s3_path"])
-    style = sections.get("style", "")
-    language = base.get("language", "English")
-    preface_desc, prologue_desc, epilogue_desc = _section_descriptions_from_structure(structure)
-    epilogue_desc = sections.get("epilogue_desc") or epilogue_desc
 
-    preface_text = await ensure_section(
-        "Preface", preface_desc, style, language, sections.get("preface_text", "")
-    )
-    prologue_text = await ensure_section(
-        "Prologue", prologue_desc, style, language, sections.get("prologue_text", "")
-    )
-    epilogue_text = await ensure_section("Epilogue", epilogue_desc, style, language, "")
-
+    preface_text = str(sections.get("preface_text", "")).strip()
+    prologue_text = str(sections.get("prologue_text", "")).strip()
+    epilogue_text = str(sections.get("epilogue_text", "")).strip()
     missing = [
-        name for name, text in (
+        name
+        for name, text in (
             ("Preface", preface_text),
             ("Prologue", prologue_text),
             ("Epilogue", epilogue_text),
@@ -1065,7 +1369,9 @@ async def op_finalize(payload: dict) -> dict:
         if not _section_text_is_valid(text)
     ]
     if missing:
-        raise ValueError(f"Failed to generate section text after retries: {', '.join(missing)}")
+        raise ValueError(
+            "Missing generated section text from batch results: " + ", ".join(missing)
+        )
 
     final_output = dict(base)
     final_output["full_book_structure"] = structure
@@ -1094,7 +1400,9 @@ async def async_lambda_handler(event, context):
 
     operation = payload.get("operation") if isinstance(payload, dict) else None
     if not operation:
-        return await legacy_full_pipeline(payload)
+        if ALLOW_LEGACY_PIPELINE:
+            return await legacy_full_pipeline(payload)
+        raise ValueError("Missing operation; refusing to run legacy pipeline implicitly.")
 
     if not all([
         payload.get("order_id"),
@@ -1135,14 +1443,7 @@ async def legacy_full_pipeline(payload):
     chart = s3_get_json(payload["astrology_json_s3_path"])
     structure = s3_get_json(payload["book_structure_s3_path"])
 
-    try:
-        image_prompt_template = ssm_client.get_parameter(
-            Name="/AstrologyBookFactory/prompts/writer/image",
-            WithDecryption=True,
-        )["Parameter"]["Value"]
-    except Exception:
-        print("SSM image prompt not found; using fallback.")
-        image_prompt_template = IMAGE_PROMPT_FALLBACK
+    image_prompt_template = get_image_prompt_template()
 
     sections = await prepare_style_and_sections(chart, structure, focus, language)
     style = sections["style"]
@@ -1166,6 +1467,10 @@ async def legacy_full_pipeline(payload):
         raise RuntimeError(f"Chapter text batch ended with status={batch.status}")
 
     merged_results_by_id, failed_ids = collect_chapter_batch_results(sync_openai_client, batch)
+    merged_results_by_id, invalid_ids = filter_valid_text_results(
+        merged_results_by_id, manifest, {}
+    )
+    failed_ids |= invalid_ids
     missing_ids = set(manifest.keys()) - set(merged_results_by_id.keys())
     failed_ids |= missing_ids
 
@@ -1185,8 +1490,18 @@ async def legacy_full_pipeline(payload):
             break
         retry_results_by_id, retry_failed_ids = collect_chapter_batch_results(sync_openai_client, retry_batch)
         merged_results_by_id.update(retry_results_by_id)
-        failed_ids = set(retry_ids) - set(retry_results_by_id.keys())
+        merged_results_by_id, retry_invalid_ids = filter_valid_text_results(
+            merged_results_by_id, manifest, {}
+        )
+        failed_ids = (set(retry_ids) - set(merged_results_by_id.keys())) | retry_invalid_ids
         failed_ids |= (set(retry_failed_ids) & set(retry_ids))
+
+    missing_chapters = set(manifest.keys()) - set(merged_results_by_id.keys())
+    if missing_chapters:
+        raise ValueError(
+            "Chapter text validation failed after retries; missing or invalid: "
+            + ", ".join(sorted(missing_chapters))
+        )
 
     chapters_data = build_chapters_data_from_results(
         merged_results_by_id, manifest, order_id, line_item_id

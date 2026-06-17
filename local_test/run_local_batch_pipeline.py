@@ -6,10 +6,10 @@ see repo gpt-5.5-doc.txt). Images use Batch /v1/images/generations (gpt-image-2)
 
 Pipeline steps:
   1. Fetch astrology data (astrologyapi.com)
-  2. Architect book structure (OpenAI Responses API, GPT-5.5)
-  3a. Submit chapter text requests as a Batch job (OpenAI Batch API, endpoint /v1/responses)
-  3b. Poll until batch completes, then collect chapter texts
-  3c. Generate chapter images via Batch API
+  2. Architect book structure (OpenAI Responses API, GPT-5.5) with validation + retry
+  3a. Submit chapter + section text as one Batch job (/v1/responses)
+  3b. Poll until batch completes, validate outputs, retry failures, collect results
+  3c. Generate chapter images via Batch API (with validation + retry)
   4. Generate PDF (book_pdf_exporter.py)
 
 Usage:
@@ -51,26 +51,29 @@ CHAPTER_MAX_OUTPUT_TOKENS = 48000
 # Architect / long prose (sync Responses)
 REASONING_EFFORT_ARCHITECT = "high"
 TEXT_VERBOSITY_ARCHITECT = "high"
-ARCHITECT_MAX_OUTPUT_TOKENS = 16000
+ARCHITECT_MAX_OUTPUT_TOKENS = 24000
+ARCHITECT_EXPECTED_CHAPTERS = 7
+ARCHITECT_MAX_RETRIES = 2
 
 # Style profile (structured JSON — keep reasoning moderate, text less verbose)
 REASONING_EFFORT_STYLE = "medium"
 TEXT_VERBOSITY_STYLE = "low"
 STYLE_MAX_OUTPUT_TOKENS = 600
 
-# Preface / prologue / epilogue (GPT-5.5, same depth settings as architect)
+# Preface / prologue / epilogue (batched with chapters)
 SECTION_MAX_OUTPUT_TOKENS = 4000
 SECTION_WORD_TARGET = 550
 SECTION_WORD_MIN = 500
 SECTION_WORD_MAX = 600
 IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = 200
+IMAGE_MIN_BYTES = 50000
 
 BATCH_POLL_INTERVAL = 15  # seconds between status checks
 BOOK_WORD_TARGET = 50000
 CHAPTER_WORD_TARGET = 7750
 CHAPTER_WORD_MIN = 7500
 CHAPTER_WORD_MAX = 8000
-MAX_BATCH_RETRIES = 1
+MAX_BATCH_RETRIES = 3
 
 BATCH_ENDPOINT_RESPONSES = "/v1/responses"
 
@@ -130,6 +133,238 @@ Your entire response MUST be a single, valid JSON object.
 __ASTROLOGY_DATA__"""
 
 IMAGE_PROMPT_TEMPLATE = "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
+
+METADATA_KEYS = (
+    "title",
+    "subtitle",
+    "footer_text",
+    "preface_title",
+    "prologue_title",
+    "epilogue_title",
+    "dedication_title",
+)
+UI_LABEL_KEYS = ("toc_title", "chapter_prefix")
+SECTION_DESC_KEYS = ("preface_description", "prologue_description", "epilogue_description")
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers (aligned with src/write_chapters/app.py)
+# ---------------------------------------------------------------------------
+
+def _word_count(text: str) -> int:
+    return len(str(text or "").split())
+
+
+def _text_ends_complete_sentence(text: str) -> bool:
+    stripped = str(text or "").strip()
+    if not stripped:
+        return False
+    while stripped and stripped[-1] in '"\'”’»)':
+        stripped = stripped[:-1].rstrip()
+    return bool(stripped) and stripped[-1] in ".!?"
+
+
+def _batch_body_is_incomplete(body: dict) -> bool:
+    if not isinstance(body, dict):
+        return False
+    if body.get("status") == "incomplete":
+        return True
+    return bool(body.get("incomplete_details"))
+
+
+def _validate_chapter_text(text) -> tuple[bool, str]:
+    if not text or not str(text).strip():
+        return False, "empty text"
+    wc = _word_count(text)
+    if wc < CHAPTER_WORD_MIN:
+        return False, f"word count {wc} below minimum {CHAPTER_WORD_MIN}"
+    if not _text_ends_complete_sentence(text):
+        return False, "text does not end with a complete sentence"
+    return True, ""
+
+
+def _validate_section_text(text) -> tuple[bool, str]:
+    if not text or not str(text).strip():
+        return False, "empty text"
+    wc = _word_count(text)
+    if wc < SECTION_WORD_MIN:
+        return False, f"word count {wc} below minimum {SECTION_WORD_MIN}"
+    if not _text_ends_complete_sentence(text):
+        return False, "text does not end with a complete sentence"
+    return True, ""
+
+
+def _validate_image_bytes(raw: bytes) -> tuple[bool, str]:
+    size = len(raw or b"")
+    if size < IMAGE_MIN_BYTES:
+        return False, f"image too small ({size} bytes, minimum {IMAGE_MIN_BYTES})"
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False, "not a valid PNG file"
+    return True, ""
+
+
+def filter_valid_text_results(merged, chapter_manifest, section_manifest):
+    invalid_ids = set()
+    for custom_id in list(merged.keys()):
+        text = merged.get(custom_id)
+        if custom_id in chapter_manifest:
+            ok, reason = _validate_chapter_text(text)
+        elif custom_id in section_manifest:
+            ok, reason = _validate_section_text(text)
+        else:
+            continue
+        if not ok:
+            print(f"  VALIDATION FAIL {custom_id}: {reason}")
+            invalid_ids.add(custom_id)
+            merged.pop(custom_id, None)
+    return merged, invalid_ids
+
+
+def _chapters_from_structure(data: dict) -> list:
+    struct = data.get("structure") if isinstance(data.get("structure"), dict) else {}
+    chapters = struct.get("chapters")
+    if isinstance(chapters, list):
+        return chapters
+    top = data.get("chapters")
+    return top if isinstance(top, list) else []
+
+
+def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
+    errors = []
+    if not isinstance(data, dict):
+        return False, ["root is not a JSON object"]
+
+    metadata = data.get("metadata") or data.get("book_metadata")
+    if not isinstance(metadata, dict):
+        errors.append("missing metadata object")
+    else:
+        for key in METADATA_KEYS:
+            if not str(metadata.get(key, "")).strip():
+                errors.append(f"metadata.{key} missing or empty")
+
+    ui_labels = data.get("ui_labels")
+    if not isinstance(ui_labels, dict):
+        errors.append("missing ui_labels object")
+    else:
+        for key in UI_LABEL_KEYS:
+            if not str(ui_labels.get(key, "")).strip():
+                errors.append(f"ui_labels.{key} missing or empty")
+
+    struct = data.get("structure")
+    if not isinstance(struct, dict):
+        errors.append("missing structure object")
+        struct = {}
+
+    for key in SECTION_DESC_KEYS:
+        if not str(struct.get(key, "")).strip():
+            errors.append(f"structure.{key} missing or empty")
+
+    chapters = _chapters_from_structure(data)
+    if len(chapters) != ARCHITECT_EXPECTED_CHAPTERS:
+        errors.append(f"expected {ARCHITECT_EXPECTED_CHAPTERS} chapters, got {len(chapters)}")
+    for idx, chapter in enumerate(chapters, start=1):
+        if not isinstance(chapter, dict):
+            errors.append(f"chapter {idx} is not an object")
+            continue
+        if not str(chapter.get("title", "")).strip():
+            errors.append(f"chapter {idx} title missing or empty")
+        if not str(chapter.get("description", "")).strip():
+            errors.append(f"chapter {idx} description missing or empty")
+
+    return len(errors) == 0, errors
+
+
+def _response_is_incomplete(resp) -> bool:
+    if getattr(resp, "status", None) == "incomplete":
+        return True
+    md = getattr(resp, "model_dump", None)
+    if callable(md):
+        d = md()
+        if isinstance(d, dict) and (d.get("status") == "incomplete" or d.get("incomplete_details")):
+            return True
+    return False
+
+
+def default_style(focus: str, language: str) -> str:
+    return (
+        f"Language: {language}. "
+        f"Focus: {focus}. "
+        "Tone: Warm, psychologically precise, compassionate, direct second-person. "
+        "Voice rules: concrete language; grounded interpretation; practical guidance; "
+        "emotionally honest pacing; no fluff. "
+        "Avoid: generic filler; moralizing; vague advice; melodrama."
+    )
+
+
+def _section_batch_prompt(name, description, style, language):
+    return f"""Generate narrative prose content for a personal astrology book section.
+Section Type: {name}
+Language: {language}
+Style: {style}
+Context: {description}
+Word Contract: Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
+Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
+Layout Rule: This section must fit on two printed pages. End with a complete sentence.
+Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
+STRICT RULES:
+- Output only body text.
+- No headings or titles.
+- No markdown.
+- No labels.
+- Start directly with prose.
+- Use second person POV."""
+
+
+def build_section_batch_tasks(structure, style, language):
+    struct_inner = structure.get("structure", {})
+    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or (
+        "Write a warm, welcoming preface setting the stage for a journey of self-discovery based on the user's astrology."
+    )
+    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or (
+        "Write an introduction that explains the core themes of the book and invites the reader to explore their inner world."
+    )
+    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or (
+        "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
+    )
+    section_specs = [
+        ("section-preface", "Preface", preface_desc),
+        ("section-prologue", "Prologue", prologue_desc),
+        ("section-epilogue", "Epilogue", epilogue_desc),
+    ]
+    tasks = []
+    manifest = {}
+    for custom_id, name, description in section_specs:
+        prompt = _section_batch_prompt(name, description, style, language)
+        tasks.append(
+            {
+                "custom_id": custom_id,
+                "method": "POST",
+                "url": BATCH_ENDPOINT_RESPONSES,
+                "body": {
+                    "model": MODEL_CONTENT,
+                    "input": [{"role": "user", "content": prompt}],
+                    "text": {
+                        "format": {"type": "text"},
+                        "verbosity": TEXT_VERBOSITY_ARCHITECT,
+                    },
+                    "reasoning": {"effort": REASONING_EFFORT_ARCHITECT},
+                    "max_output_tokens": SECTION_MAX_OUTPUT_TOKENS,
+                },
+            }
+        )
+        manifest[custom_id] = {"section_name": name.lower(), "description": description}
+        print(f"    Task '{custom_id}': {name}")
+    return tasks, manifest
+
+
+def _sections_from_batch_results(merged, section_manifest):
+    section_results = {}
+    for custom_id, meta in section_manifest.items():
+        section_name = meta["section_name"]
+        text = merged.get(custom_id, "")
+        if text:
+            section_results[f"{section_name}_text"] = text
+    return section_results
 
 
 # ---------------------------------------------------------------------------
@@ -251,34 +486,59 @@ def architect_book(astrology_data, focus, language):
     )
 
     client = OpenAI(api_key=OPENAI_API_KEY)
-    print("  Calling OpenAI Responses API (gpt-5.5, reasoning=high, verbosity=high)...")
-    resp = client.responses.create(
-        model=MODEL_CONTENT,
-        input=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        text={
-            "format": {"type": "json_object"},
-            "verbosity": TEXT_VERBOSITY_ARCHITECT,
-        },
-        reasoning={"effort": REASONING_EFFORT_ARCHITECT},
-        max_output_tokens=ARCHITECT_MAX_OUTPUT_TOKENS,
+    max_attempts = ARCHITECT_MAX_RETRIES + 1
+    last_errors = []
+
+    for attempt in range(1, max_attempts + 1):
+        print(f"  Calling OpenAI Responses API (attempt {attempt}/{max_attempts})...")
+        resp = client.responses.create(
+            model=MODEL_CONTENT,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            text={
+                "format": {"type": "json_object"},
+                "verbosity": TEXT_VERBOSITY_ARCHITECT,
+            },
+            reasoning={"effort": REASONING_EFFORT_ARCHITECT},
+            max_output_tokens=ARCHITECT_MAX_OUTPUT_TOKENS,
+        )
+
+        if _response_is_incomplete(resp):
+            last_errors = [f"response incomplete: {getattr(resp, 'incomplete_details', None)}"]
+            print(f"  VALIDATION FAIL attempt {attempt}: {last_errors[0]}")
+            continue
+
+        raw = _response_text_from_obj(resp)
+        if not raw:
+            last_errors = ["empty model response"]
+            print(f"  VALIDATION FAIL attempt {attempt}: empty model response")
+            continue
+
+        try:
+            structure = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            last_errors = [f"invalid JSON: {exc}"]
+            print(f"  VALIDATION FAIL attempt {attempt}: {last_errors[0]}")
+            continue
+
+        ok, errors = validate_book_structure(structure)
+        if ok:
+            chapters = _chapters_from_structure(structure)
+            print(f"  Generated valid structure with {len(chapters)} chapters.")
+            out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(structure, f, indent=2, ensure_ascii=False)
+            print(f"  Saved -> {out_path}")
+            return structure
+
+        last_errors = errors
+        print(f"  VALIDATION FAIL attempt {attempt}: {errors}")
+
+    raise ValueError(
+        f"Book structure invalid after {max_attempts} attempt(s): " + "; ".join(last_errors)
     )
-
-    raw = _response_text_from_obj(resp)
-    if getattr(resp, "status", None) == "incomplete":
-        print(f"  WARNING: Architect response incomplete: {getattr(resp, 'incomplete_details', None)}")
-    structure = json.loads(raw)
-    chapters = structure.get("structure", {}).get("chapters", [])
-    print(f"  Generated structure with {len(chapters)} chapters.")
-
-    out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(structure, f, indent=2, ensure_ascii=False)
-
-    print(f"  Saved -> {out_path}")
-    return structure
 
 
 # ===========================================================================
@@ -349,36 +609,6 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
 
     print(f"\n  BATCH: {len(tasks)} chapter tasks built.")
     return tasks, manifest
-
-
-def build_style_chart_snapshot(astrology_data):
-    """Build a compact chart snapshot so style generation stays chart-aware but concise."""
-    charts = astrology_data.get("CHARTS", {})
-    western = charts.get("WESTERN_HOROSCOPE", {}).get("Data", {}) or {}
-    planets = western.get("planets", []) or []
-    aspects = western.get("aspects", []) or []
-
-    top_planets = []
-    for p in planets[:8]:
-        name = p.get("name")
-        sign = p.get("sign")
-        house = p.get("house")
-        if name and sign is not None and house is not None:
-            top_planets.append(f"{name} in {sign} (house {house})")
-
-    top_aspects = []
-    for a in aspects[:8]:
-        ap = a.get("aspecting_planet")
-        bp = a.get("aspected_planet")
-        at = a.get("type")
-        if ap and bp and at:
-            top_aspects.append(f"{ap} {at} {bp}")
-
-    return {
-        "ascendant": western.get("ascendant"),
-        "top_planets": top_planets,
-        "top_aspects": top_aspects,
-    }
 
 
 def submit_chapter_batch(
@@ -526,8 +756,10 @@ def collect_chapter_batch_results(client, batch, manifest, artifact_prefix="chap
         body = response["body"]
         print(f"    Model:           {body.get('model')}")
         print(f"    Response status: {body.get('status')}")
-        if body.get("status") == "incomplete":
+        if _batch_body_is_incomplete(body):
             print(f"    Incomplete:      {body.get('incomplete_details')}")
+            failed_ids.add(custom_id)
+            continue
 
         usage = body.get("usage", {}) or {}
         if "input_tokens" in usage or "output_tokens" in usage:
@@ -716,6 +948,11 @@ def collect_image_batch_results(client, batch, manifest, artifact_prefix="chapte
             continue
 
         raw = base64.b64decode(b64)
+        ok, reason = _validate_image_bytes(raw)
+        if not ok:
+            print(f"    VALIDATION FAIL {custom_id}: {reason}")
+            failed_ids.add(custom_id)
+            continue
         image_bytes_by_id[custom_id] = raw
         print(f"    Decoded image bytes: {len(raw):,}")
 
@@ -765,12 +1002,9 @@ async def generate_chapter_images_batch(sync_client, async_client, chapters_data
     )
     image_batch = poll_batch_until_done(sync_client, image_batch_id)
 
-    if image_batch.status != "completed":
-        if image_batch.status == "expired" and image_batch.output_file_id:
-            print("  WARNING: Image batch expired but has partial results — collecting what's available.")
-        else:
-            print(f"  WARNING: Image batch ended with status={image_batch.status}.")
-            return chapters_data
+    if image_batch.status not in {"completed", "expired"}:
+        print(f"  WARNING: Image batch ended with status={image_batch.status}.")
+        return chapters_data
 
     merged_images_by_id, failed_image_ids = collect_image_batch_results(
         sync_client, image_batch, image_manifest, artifact_prefix="chapter_image",
@@ -800,12 +1034,9 @@ async def generate_chapter_images_batch(sync_client, async_client, chapters_data
         )
         retry_batch = poll_batch_until_done(sync_client, retry_batch_id)
 
-        if retry_batch.status != "completed":
-            if retry_batch.status == "expired" and retry_batch.output_file_id:
-                print(f"  WARNING: Image retry batch {retry_num} expired with partial output. Collecting partial results.")
-            else:
-                print(f"  WARNING: Image retry batch {retry_num} ended with status={retry_batch.status}.")
-                break
+        if retry_batch.status not in {"completed", "expired"}:
+            print(f"  WARNING: Image retry batch {retry_num} ended with status={retry_batch.status}.")
+            break
 
         retry_images_by_id, retry_failed_ids = collect_image_batch_results(
             sync_client,
@@ -827,164 +1058,79 @@ async def generate_chapter_images_batch(sync_client, async_client, chapters_data
 
 
 # ===========================================================================
-# STEP 3: Sections helper  (unchanged)
-# ===========================================================================
-
-async def generate_section(client, name, description, style, language):
-    if not description:
-        return ""
-    print(f"  Generating {name}...")
-    prompt = f"""
-    Generate narrative prose content for a personal astrology book section.
-
-    Section Type: {name}
-    Language: {language}
-    Style: {style}
-    Context: {description}
-
-    **Word Contract:** Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
-    **Length Rule:** Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
-    **Layout Rule:** This section must fit on two printed pages. End with a complete sentence.
-    **Paragraphing:** Plain paragraphs only. Use at most 3-4 paragraph breaks (double newlines) in the whole section.
-
-    STRICT RULES:
-    - Output ONLY body text.
-    - No headings or titles.
-    - No markdown.
-    - No labels.
-    - Start directly with prose.
-    - Second person POV ("You").
-    """
-    try:
-        resp = await client.responses.create(
-            model=MODEL_CONTENT,
-            input=[{"role": "user", "content": prompt}],
-            text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_ARCHITECT},
-            reasoning={"effort": REASONING_EFFORT_ARCHITECT},
-            max_output_tokens=SECTION_MAX_OUTPUT_TOKENS,
-        )
-        if getattr(resp, "status", None) == "incomplete":
-            print(f"  WARNING: {name} response incomplete: {getattr(resp, 'incomplete_details', None)}")
-        text = _response_text_from_obj(resp).strip()
-        word_count = len(text.split())
-        print(f"  {name} done: {word_count} words, {len(text)} chars")
-        return text
-    except Exception as e:
-        print(f"  Error generating {name}: {e}")
-        return ""
-
-
-# ===========================================================================
-# STEP 3 orchestrator: Write Chapters (Batch) + Images (sync)
+# STEP 3 orchestrator: Write Chapters (Batch) + Images (Batch)
 # ===========================================================================
 
 async def write_chapters(astrology_data, structure, focus, language):
     print("\n" + "=" * 60)
-    print("STEP 3: Writing Chapters (Batch /v1/responses, GPT-5.5) + Images (Batch)")
+    print("STEP 3: Writing Chapters + Sections (Batch) + Images (Batch)")
     print("=" * 60)
 
     async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     sync_client = OpenAI(api_key=OPENAI_API_KEY)
 
-    # --- Style analysis (short + chart-aware + structured output) ---
-    style_chart = build_style_chart_snapshot(astrology_data)
-    try:
-        style_resp = await async_client.responses.create(
-            model=MODEL_CONTENT,
-            input=[{
-                "role": "user",
-                "content": (
-                    f"Generate a concise writing style profile for a personal astrology book.\n"
-                    f"Focus: {focus}\n"
-                    f"Language: {language}\n"
-                    f"Chart snapshot: {json.dumps(style_chart, ensure_ascii=False)}\n\n"
-                    "Return strict JSON with keys:\n"
-                    "{"
-                    "\"tone\":\"max 20 words\","
-                    "\"voice_rules\":[\"max 5 short rules\"],"
-                    "\"avoid\":[\"max 4 short anti-patterns\"]"
-                    "}\n"
-                    "Do not add any text outside JSON."
-                )
-            }],
-            text={"format": {"type": "json_object"}, "verbosity": TEXT_VERBOSITY_STYLE},
-            reasoning={"effort": REASONING_EFFORT_STYLE},
-            max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
-        )
-        style_json = json.loads(_response_text_from_obj(style_resp))
-        tone = (style_json.get("tone") or "").strip()
-        rules = [r.strip() for r in style_json.get("voice_rules", []) if isinstance(r, str) and r.strip()]
-        avoids = [a.strip() for a in style_json.get("avoid", []) if isinstance(a, str) and a.strip()]
-
-        style = (
-            f"Tone: {tone}. "
-            f"Voice rules: {'; '.join(rules[:5])}. "
-            f"Avoid: {'; '.join(avoids[:4])}."
-        )
-    except Exception as e:
-        print(f"  Style generation failed, using fallback style: {e}")
-        style = "Tone: Warm, psychologically precise, compassionate, direct second-person. Voice rules: concrete language; grounded interpretation; practical guidance; emotionally honest pacing; no fluff. Avoid: generic filler; moralizing; vague advice; melodrama."
+    style = default_style(focus, language)
     print(f"  Style: {style[:80]}...")
 
-    # --- Resolve descriptions from structure ---
     struct_inner = structure.get("structure", {})
 
-    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or \
-        "Write a warm, welcoming preface setting the stage for a journey of self-discovery based on the user's astrology."
-    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or \
-        "Write an introduction that explains the core themes of the book and invites the reader to explore their inner world."
-    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or \
-        "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
-
-    # --- Foreword ---
     foreword_path = os.path.join(os.environ.get("LAMBDA_TASK_ROOT", "/app/generate_pdf"), "assets", "foreword.txt")
     try:
         with open(foreword_path, "r", encoding="utf-8") as f:
             foreword_text = f.read().strip()
     except FileNotFoundError:
         foreword_text = "Welcome to your Blueprint."
-
     print("  Foreword language fixed to English (translation skipped).")
 
-    # --- Generate preface + prologue (still async, small sections) ---
-    preface_text = await generate_section(async_client, "Preface", preface_desc, style, language)
-    prologue_text = await generate_section(async_client, "Prologue", prologue_desc, style, language)
-
-    # --- BATCH: chapter text generation ---
     chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])
     word_target = CHAPTER_WORD_TARGET
 
-    tasks, manifest = build_chapter_batch_tasks(
+    print("\n" + "-" * 50)
+    print("  BATCH: Building chapter + section text tasks...")
+    print("-" * 50)
+    chapter_tasks, chapter_manifest = build_chapter_batch_tasks(
         chapters_list, astrology_data, focus, style, language, word_target,
     )
+    section_tasks, section_manifest = build_section_batch_tasks(structure, style, language)
+    tasks = chapter_tasks + section_tasks
+    text_manifest = {**chapter_manifest, **section_manifest}
+    print(f"\n  BATCH: {len(tasks)} total text tasks ({len(chapter_tasks)} chapters + {len(section_tasks)} sections).")
+
+    with open(os.path.join(ARTIFACTS_DIR, "text_chapter_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(chapter_manifest, f, indent=2, ensure_ascii=False)
+    with open(os.path.join(ARTIFACTS_DIR, "text_section_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(section_manifest, f, indent=2, ensure_ascii=False)
 
     batch_id = submit_chapter_batch(
         sync_client,
         tasks,
-        manifest,
+        text_manifest,
         artifact_prefix="chapter_text",
         endpoint=BATCH_ENDPOINT_RESPONSES,
     )
     batch = poll_batch_until_done(sync_client, batch_id)
 
-    if batch.status != "completed":
-        if batch.status == "expired" and batch.output_file_id:
-            print("  WARNING: Batch expired but has partial results — collecting what's available.")
-        else:
-            raise RuntimeError(f"Chapter text batch ended with status: {batch.status}")
+    if batch.status not in {"completed", "expired"}:
+        raise RuntimeError(f"Chapter text batch ended with status: {batch.status}")
 
     merged_results_by_id, failed_ids = collect_chapter_batch_results(
-        sync_client, batch, manifest, artifact_prefix="chapter_text",
+        sync_client, batch, text_manifest, artifact_prefix="chapter_text",
     )
+    merged_results_by_id, invalid_ids = filter_valid_text_results(
+        merged_results_by_id, chapter_manifest, section_manifest,
+    )
+    failed_ids |= invalid_ids
+    expected_ids = set(chapter_manifest.keys()) | set(section_manifest.keys())
+    missing_ids = expected_ids - set(merged_results_by_id.keys())
+    failed_ids |= missing_ids
 
-    # Retry only failed/missing custom_ids once.
     for retry_num in range(1, MAX_BATCH_RETRIES + 1):
         if not failed_ids:
             break
 
         retry_ids = sorted(failed_ids)
         print("\n" + "-" * 50)
-        print(f"  BATCH RETRY {retry_num}: Retrying {len(retry_ids)} failed/missing chapters...")
+        print(f"  BATCH RETRY {retry_num}: Retrying {len(retry_ids)} failed/missing/invalid items...")
         print("-" * 50)
         print(f"    Retry IDs: {retry_ids}")
 
@@ -996,46 +1142,75 @@ async def write_chapters(astrology_data, structure, focus, language):
         retry_batch_id = submit_chapter_batch(
             sync_client,
             retry_tasks,
-            manifest,
+            text_manifest,
             artifact_prefix=f"chapter_text_retry_{retry_num}",
             endpoint=BATCH_ENDPOINT_RESPONSES,
         )
         retry_batch = poll_batch_until_done(sync_client, retry_batch_id)
 
-        if retry_batch.status != "completed":
-            if retry_batch.status == "expired" and retry_batch.output_file_id:
-                print(f"  WARNING: Retry batch {retry_num} expired with partial output. Collecting partial results.")
-            else:
-                print(f"  WARNING: Retry batch {retry_num} ended with status={retry_batch.status}.")
-                break
+        if retry_batch.status not in {"completed", "expired"}:
+            print(f"  WARNING: Retry batch {retry_num} ended with status={retry_batch.status}.")
+            break
 
         retry_results_by_id, retry_failed_ids = collect_chapter_batch_results(
             sync_client,
             retry_batch,
-            manifest,
+            text_manifest,
             artifact_prefix=f"chapter_text_retry_{retry_num}",
         )
-
-        # Merge successful retry outputs; keep tracking only still-failed IDs.
         merged_results_by_id.update(retry_results_by_id)
-        failed_ids = set(retry_ids) - set(retry_results_by_id.keys())
+        merged_results_by_id, retry_invalid_ids = filter_valid_text_results(
+            merged_results_by_id, chapter_manifest, section_manifest,
+        )
+        failed_ids = (set(retry_ids) - set(merged_results_by_id.keys())) | retry_invalid_ids
         failed_ids |= (set(retry_failed_ids) & set(retry_ids))
-        print(f"  BATCH RETRY {retry_num}: Recovered {len(retry_results_by_id)} chapters.")
+        print(f"  BATCH RETRY {retry_num}: Recovered {len(retry_results_by_id)} items.")
         if failed_ids:
-            print(f"  BATCH RETRY {retry_num}: Still missing -> {sorted(failed_ids)}")
+            print(f"  BATCH RETRY {retry_num}: Still missing/invalid -> {sorted(failed_ids)}")
 
-    chapters_data, missing_ids = build_chapters_data_from_results(merged_results_by_id, manifest)
-    if missing_ids:
-        print(f"  WARNING: Final missing chapter IDs after retries: {missing_ids}")
+    chapter_results = {
+        custom_id: text for custom_id, text in merged_results_by_id.items() if custom_id in chapter_manifest
+    }
+    missing_chapters = set(chapter_manifest.keys()) - set(chapter_results.keys())
+    if missing_chapters:
+        raise ValueError(
+            "Chapter text validation failed after retries; missing or invalid: "
+            + ", ".join(sorted(missing_chapters))
+        )
 
+    chapters_data, _ = build_chapters_data_from_results(chapter_results, chapter_manifest)
     if not chapters_data:
         raise ValueError("No chapter texts were produced by the batch job.")
 
-    # --- Generate images via Batch API ---
-    chapters_data = await generate_chapter_images_batch(sync_client, async_client, chapters_data)
+    section_texts = _sections_from_batch_results(merged_results_by_id, section_manifest)
+    preface_text = section_texts.get("preface_text", "")
+    prologue_text = section_texts.get("prologue_text", "")
+    epilogue_text = section_texts.get("epilogue_text", "")
+    missing_sections = [
+        name for name, text in (
+            ("Preface", preface_text),
+            ("Prologue", prologue_text),
+            ("Epilogue", epilogue_text),
+        )
+        if not _validate_section_text(text)[0]
+    ]
+    if missing_sections:
+        raise ValueError(
+            "Section text validation failed after retries; missing or invalid: "
+            + ", ".join(missing_sections)
+        )
 
-    # --- Generate epilogue ---
-    epilogue_text = await generate_section(async_client, "Epilogue", epilogue_desc, style, language)
+    for key, text in (
+        ("preface", preface_text),
+        ("prologue", prologue_text),
+        ("epilogue", epilogue_text),
+    ):
+        sec_path = os.path.join(ARTIFACTS_DIR, f"section_{key}.json")
+        with open(sec_path, "w", encoding="utf-8") as f:
+            json.dump({"section_name": key, "section_text": text}, f, indent=2, ensure_ascii=False)
+        print(f"    Saved section artifact -> {sec_path}")
+
+    chapters_data = await generate_chapter_images_batch(sync_client, async_client, chapters_data)
 
     metadata = structure.get("metadata", struct_inner.get("metadata", {}))
 
