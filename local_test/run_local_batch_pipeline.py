@@ -21,6 +21,7 @@ import os
 import json
 import asyncio
 import time
+import re
 from datetime import datetime
 
 import base64
@@ -151,17 +152,59 @@ SECTION_DESC_KEYS = ("preface_description", "prologue_description", "epilogue_de
 # Validation helpers (aligned with src/write_chapters/app.py)
 # ---------------------------------------------------------------------------
 
+_CJK_CHAR_RE = re.compile(
+    r"[\u3040-\u30ff"
+    r"\u3400-\u4dbf"
+    r"\u4e00-\u9fff"
+    r"\uf900-\ufaff"
+    r"\uac00-\ud7af"
+    r"\u0900-\u097f"
+    r"\u0e00-\u0e7f"
+    r"]"
+)
+_CLOSING_WRAPPERS = '"\'""''」』)》）】'
+_SENTENCE_END_CHARS = frozenset(".!?。！？।॥")
+CJK_MIN_LENGTH_RATIO = 0.62
+
+
+def _cjk_char_count(text: str) -> int:
+    return len(_CJK_CHAR_RE.findall(str(text or "")))
+
+
+def _latin_word_count(text: str) -> int:
+    remainder = _CJK_CHAR_RE.sub(" ", str(text or ""))
+    return len([w for w in remainder.split() if w.strip() and any(c.isalnum() for c in w)])
+
+
+def _content_unit_count(text: str) -> int:
+    return _cjk_char_count(text) + _latin_word_count(text)
+
+
+def _is_cjk_heavy(text: str) -> bool:
+    cjk = _cjk_char_count(text)
+    if cjk < 80:
+        return False
+    units = _content_unit_count(text)
+    return cjk >= units * 0.35
+
+
+def _min_content_units(min_val: int, text: str) -> int:
+    if _is_cjk_heavy(text):
+        return max(1, int(min_val * CJK_MIN_LENGTH_RATIO))
+    return min_val
+
+
 def _word_count(text: str) -> int:
-    return len(str(text or "").split())
+    return _content_unit_count(text)
 
 
 def _text_ends_complete_sentence(text: str) -> bool:
     stripped = str(text or "").strip()
     if not stripped:
         return False
-    while stripped and stripped[-1] in '"\'”’»)':
+    while stripped and stripped[-1] in _CLOSING_WRAPPERS:
         stripped = stripped[:-1].rstrip()
-    return bool(stripped) and stripped[-1] in ".!?"
+    return bool(stripped) and stripped[-1] in _SENTENCE_END_CHARS
 
 
 def _batch_body_is_incomplete(body: dict) -> bool:
@@ -176,8 +219,9 @@ def _validate_chapter_text(text) -> tuple[bool, str]:
     if not text or not str(text).strip():
         return False, "empty text"
     wc = _word_count(text)
-    if wc < CHAPTER_WORD_MIN:
-        return False, f"word count {wc} below minimum {CHAPTER_WORD_MIN}"
+    min_units = _min_content_units(CHAPTER_WORD_MIN, text)
+    if wc < min_units:
+        return False, f"content length {wc} below minimum {min_units}"
     if not _text_ends_complete_sentence(text):
         return False, "text does not end with a complete sentence"
     return True, ""
@@ -187,8 +231,9 @@ def _validate_section_text(text) -> tuple[bool, str]:
     if not text or not str(text).strip():
         return False, "empty text"
     wc = _word_count(text)
-    if wc < SECTION_WORD_MIN:
-        return False, f"word count {wc} below minimum {SECTION_WORD_MIN}"
+    min_units = _min_content_units(SECTION_WORD_MIN, text)
+    if wc < min_units:
+        return False, f"content length {wc} below minimum {min_units}"
     if not _text_ends_complete_sentence(text):
         return False, "text does not end with a complete sentence"
     return True, ""

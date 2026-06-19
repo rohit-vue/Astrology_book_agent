@@ -30,6 +30,16 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_float(key: str, default: float) -> float:
+    val = os.environ.get(key)
+    if val is None or not str(val).strip():
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        return default
+
+
 MODEL_CONTENT = _env_str("MODEL_CONTENT", "gpt-5.5")
 MODEL_IMAGE = _env_str("MODEL_IMAGE", "gpt-image-2")
 BATCH_ENDPOINT_RESPONSES = _env_str("BATCH_ENDPOINT_RESPONSES", "/v1/responses")
@@ -53,12 +63,28 @@ SECTION_GENERATION_MAX_RETRIES = _env_int("SECTION_GENERATION_MAX_RETRIES", 2)
 IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = _env_int("IMAGE_SUMMARY_MAX_OUTPUT_TOKENS", 200)
 
 BATCH_POLL_INTERVAL = _env_int("BATCH_POLL_INTERVAL", 15)
+BATCH_MAX_AGE_SECONDS = _env_int("BATCH_MAX_AGE_SECONDS", 84600)
 BOOK_WORD_TARGET = _env_int("BOOK_WORD_TARGET", 50000)
 CHAPTER_WORD_TARGET = _env_int("CHAPTER_WORD_TARGET", 7750)
 CHAPTER_WORD_MIN = _env_int("CHAPTER_WORD_MIN", 7500)
 CHAPTER_WORD_MAX = _env_int("CHAPTER_WORD_MAX", 8000)
+CJK_MIN_LENGTH_RATIO = _env_float("CJK_MIN_LENGTH_RATIO", 0.62)
 MAX_BATCH_RETRIES = _env_int("MAX_BATCH_RETRIES", 1)
 IMAGE_MIN_BYTES = _env_int("IMAGE_MIN_BYTES", 50000)
+
+# Scripts where each character is roughly one word unit (no whitespace between words).
+_CJK_CHAR_RE = re.compile(
+    r"[\u3040-\u30ff"
+    r"\u3400-\u4dbf"
+    r"\u4e00-\u9fff"
+    r"\uf900-\ufaff"
+    r"\uac00-\ud7af"
+    r"\u0900-\u097f"
+    r"\u0e00-\u0e7f"
+    r"]"
+)
+_CLOSING_WRAPPERS = '"\'""''」』)》）】'
+_SENTENCE_END_CHARS = frozenset(".!?。！？।॥")
 
 AWS_CONNECT_TIMEOUT_SECONDS = _env_int("AWS_CONNECT_TIMEOUT_SECONDS", 3)
 AWS_READ_TIMEOUT_SECONDS = _env_int("AWS_READ_TIMEOUT_SECONDS", 30)
@@ -279,17 +305,45 @@ def _section_text_is_valid(text) -> bool:
     return ok
 
 
+def _cjk_char_count(text: str) -> int:
+    return len(_CJK_CHAR_RE.findall(str(text or "")))
+
+
+def _latin_word_count(text: str) -> int:
+    remainder = _CJK_CHAR_RE.sub(" ", str(text or ""))
+    return len([w for w in remainder.split() if w.strip() and any(c.isalnum() for c in w)])
+
+
+def _content_unit_count(text: str) -> int:
+    """Length for validation: CJK chars + whitespace-separated words elsewhere."""
+    return _cjk_char_count(text) + _latin_word_count(text)
+
+
+def _is_cjk_heavy(text: str) -> bool:
+    cjk = _cjk_char_count(text)
+    if cjk < 80:
+        return False
+    units = _content_unit_count(text)
+    return cjk >= units * 0.35
+
+
+def _min_content_units(min_val: int, text: str) -> int:
+    if _is_cjk_heavy(text):
+        return max(1, int(min_val * CJK_MIN_LENGTH_RATIO))
+    return min_val
+
+
 def _word_count(text: str) -> int:
-    return len(str(text or "").split())
+    return _content_unit_count(text)
 
 
 def _text_ends_complete_sentence(text: str) -> bool:
     stripped = str(text or "").strip()
     if not stripped:
         return False
-    while stripped and stripped[-1] in '"\'”’»)':
+    while stripped and stripped[-1] in _CLOSING_WRAPPERS:
         stripped = stripped[:-1].rstrip()
-    return bool(stripped) and stripped[-1] in ".!?"
+    return bool(stripped) and stripped[-1] in _SENTENCE_END_CHARS
 
 
 def _batch_body_is_incomplete(body: dict) -> bool:
@@ -304,8 +358,9 @@ def _validate_chapter_text(text) -> tuple[bool, str]:
     if not text or not str(text).strip():
         return False, "empty text"
     wc = _word_count(text)
-    if wc < CHAPTER_WORD_MIN:
-        return False, f"word count {wc} below minimum {CHAPTER_WORD_MIN}"
+    min_units = _min_content_units(CHAPTER_WORD_MIN, text)
+    if wc < min_units:
+        return False, f"content length {wc} below minimum {min_units}"
     if not _text_ends_complete_sentence(text):
         return False, "text does not end with a complete sentence"
     return True, ""
@@ -315,8 +370,9 @@ def _validate_section_text(text) -> tuple[bool, str]:
     if not text or not str(text).strip():
         return False, "empty text"
     wc = _word_count(text)
-    if wc < SECTION_WORD_MIN:
-        return False, f"word count {wc} below minimum {SECTION_WORD_MIN}"
+    min_units = _min_content_units(SECTION_WORD_MIN, text)
+    if wc < min_units:
+        return False, f"content length {wc} below minimum {min_units}"
     if not _text_ends_complete_sentence(text):
         return False, "text does not end with a complete sentence"
     return True, ""
@@ -610,6 +666,97 @@ def submit_batch(client, tasks, endpoint, artifact_prefix):
     return batch_job.id
 
 
+def _batch_attr(batch, name, default=None):
+    if isinstance(batch, dict):
+        return batch.get(name, default)
+    return getattr(batch, name, default)
+
+
+def _batch_age_seconds(batch) -> int | None:
+    created_at = _batch_attr(batch, "created_at")
+    if created_at is None:
+        return None
+    try:
+        return max(0, int(time.time() - int(created_at)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _batch_is_too_old(batch) -> bool:
+    age = _batch_age_seconds(batch)
+    return age is not None and age >= BATCH_MAX_AGE_SECONDS
+
+
+def _request_counts_dict(batch) -> dict:
+    counts = _batch_attr(batch, "request_counts")
+    if isinstance(counts, dict):
+        return {
+            "total": counts.get("total", 0),
+            "completed": counts.get("completed", 0),
+            "failed": counts.get("failed", 0),
+        }
+    return {
+        "total": getattr(counts, "total", 0) if counts is not None else 0,
+        "completed": getattr(counts, "completed", 0) if counts is not None else 0,
+        "failed": getattr(counts, "failed", 0) if counts is not None else 0,
+    }
+
+
+def _batch_status_requires_replacement(batch) -> bool:
+    status = _batch_attr(batch, "status")
+    if status in {"failed", "cancelled"}:
+        return True
+    if status == "expired" and not _batch_attr(batch, "output_file_id"):
+        return True
+    if status not in {"completed", "expired"} and _batch_is_too_old(batch):
+        return True
+    return False
+
+
+def _submit_replacement_batch(
+    prefix: str,
+    pipeline_state_name: str,
+    pipe: dict,
+    tasks: list[dict],
+    failed_custom_ids: set[str],
+    endpoint: str,
+    artifact_prefix: str,
+    id_field: str,
+    count_retry: bool = True,
+) -> dict | None:
+    if not failed_custom_ids:
+        return None
+
+    retry_count = int(pipe.get("retry_count") or 0)
+    if count_retry and retry_count >= MAX_BATCH_RETRIES:
+        return None
+
+    retry_tasks = [t for t in tasks if t.get("custom_id") in failed_custom_ids]
+    if not retry_tasks:
+        print(f"No retry tasks found for {pipeline_state_name}: {sorted(failed_custom_ids)}")
+        return None
+
+    next_retry_count = retry_count + 1 if count_retry else retry_count
+    new_batch_id = submit_batch(
+        sync_openai_client,
+        retry_tasks,
+        endpoint,
+        f"{artifact_prefix}_{next_retry_count}",
+    )
+    save_state(
+        prefix,
+        pipeline_state_name,
+        {
+            **pipe,
+            "failed_custom_ids": sorted(failed_custom_ids),
+            "current_batch_id": new_batch_id,
+            "retry_count": next_retry_count,
+            "replacement_reason": artifact_prefix,
+        },
+    )
+    return {id_field: new_batch_id, "retry_count": next_retry_count}
+
+
 def poll_batch_until_done(client, batch_id):
     terminal_states = {"completed", "failed", "expired", "cancelled"}
     start = time.time()
@@ -629,7 +776,8 @@ def poll_batch_until_done(client, batch_id):
 
 def collect_chapter_batch_results(client, batch):
     if not batch.output_file_id:
-        raise RuntimeError(f"Batch {batch.id} has no output file (status={batch.status})")
+        print(f"Batch {batch.id} has no output file (status={batch.status}); retrying missing text ids.")
+        return {}, set()
     result_content = client.files.content(batch.output_file_id).content
     results_by_id = {}
     failed_ids = set()
@@ -762,7 +910,8 @@ async def build_image_batch_tasks(chapters_data, image_prompt_template):
 
 def collect_image_batch_results(client, batch):
     if not batch.output_file_id:
-        raise RuntimeError(f"Image batch {batch.id} has no output file (status={batch.status})")
+        print(f"Image batch {batch.id} has no output file (status={batch.status}); retrying missing images.")
+        return {}, set()
     result_content = client.files.content(batch.output_file_id).content
     image_bytes_by_id = {}
     failed_ids = set()
@@ -795,10 +944,11 @@ def collect_image_batch_results(client, batch):
 
 
 def collect_and_store_image_results(client, batch, manifest, order_id, line_item_id, existing_keys=None):
-    if not batch.output_file_id:
-        raise RuntimeError(f"Image batch {batch.id} has no output file (status={batch.status})")
-    result_content = client.files.content(batch.output_file_id).content
     s3_keys_by_id = dict(existing_keys or {})
+    if not batch.output_file_id:
+        print(f"Image batch {batch.id} has no output file (status={batch.status}); retrying missing images.")
+        return s3_keys_by_id, set(manifest.keys()) - set(s3_keys_by_id.keys())
+    result_content = client.files.content(batch.output_file_id).content
     failed_ids = set()
 
     for line in result_content.decode("utf-8").strip().split("\n"):
@@ -1058,12 +1208,40 @@ def op_check_text_batch(payload: dict) -> dict:
         raise ValueError("No text batch id in state.")
 
     batch = sync_openai_client.batches.retrieve(batch_id)
-    counts = batch.request_counts
+    counts = _request_counts_dict(batch)
+    age = _batch_age_seconds(batch)
     terminal = batch.status in {"completed", "failed", "expired", "cancelled"}
     print(
         f"check_text_batch status={batch.status} terminal={terminal} "
-        f"total={counts.total} done={counts.completed} failed={counts.failed}"
+        f"age={age} total={counts['total']} done={counts['completed']} failed={counts['failed']}"
     )
+
+    if _batch_status_requires_replacement(batch):
+        chapter_manifest, section_manifest = _load_text_manifests(prefix)
+        expected_ids = set(chapter_manifest.keys()) | set(section_manifest.keys())
+        merged = pipe.get("merged_results_by_id") or {}
+        remaining_ids = expected_ids - set(merged.keys())
+        tasks_obj = load_state(prefix, "text_tasks.json") or {}
+        replacement = _submit_replacement_batch(
+            prefix,
+            "text_pipeline.json",
+            pipe,
+            tasks_obj.get("tasks") or [],
+            remaining_ids,
+            BATCH_ENDPOINT_RESPONSES,
+            "chapter_text_replacement",
+            "wc_text_batch_id",
+        )
+        if replacement:
+            return {
+                **_echo_payload(payload),
+                "wc_state_prefix": prefix,
+                "wc_text_batch_id": replacement["wc_text_batch_id"],
+                "wc_text_batch_status": "resubmitted",
+                "wc_text_batch_terminal": False,
+                "wc_text_batch_resubmitted": True,
+                "wc_text_request_counts": counts,
+            }
 
     out = {
         **_echo_payload(payload),
@@ -1071,11 +1249,7 @@ def op_check_text_batch(payload: dict) -> dict:
         "wc_text_batch_id": batch_id,
         "wc_text_batch_status": batch.status,
         "wc_text_batch_terminal": terminal,
-        "wc_text_request_counts": {
-            "total": counts.total,
-            "completed": counts.completed,
-            "failed": counts.failed,
-        },
+        "wc_text_request_counts": counts,
     }
     return out
 
@@ -1092,7 +1266,7 @@ async def op_collect_text_results(payload: dict) -> dict:
     batch_id = pipe.get("current_batch_id")
 
     batch = sync_openai_client.batches.retrieve(batch_id)
-    if batch.status not in {"completed", "expired"}:
+    if batch.status not in {"completed", "expired", "failed", "cancelled"}:
         raise RuntimeError(f"Chapter text batch ended with status={batch.status}")
 
     merged = pipe.get("merged_results_by_id") or {}
@@ -1232,12 +1406,39 @@ def op_check_image_batch(payload: dict) -> dict:
         raise ValueError("No image batch id in state.")
 
     batch = sync_openai_client.batches.retrieve(batch_id)
-    counts = batch.request_counts
+    counts = _request_counts_dict(batch)
+    age = _batch_age_seconds(batch)
     terminal = batch.status in {"completed", "failed", "expired", "cancelled"}
     print(
         f"check_image_batch status={batch.status} terminal={terminal} "
-        f"total={counts.total} done={counts.completed} failed={counts.failed}"
+        f"age={age} total={counts['total']} done={counts['completed']} failed={counts['failed']}"
     )
+
+    if _batch_status_requires_replacement(batch):
+        manifest = load_state(prefix, "image_manifest.json") or {}
+        existing_keys = set((pipe.get("image_s3_keys_by_id") or {}).keys())
+        remaining_ids = set(manifest.keys()) - existing_keys
+        tasks_obj = load_state(prefix, "image_tasks.json") or {}
+        replacement = _submit_replacement_batch(
+            prefix,
+            "image_pipeline.json",
+            pipe,
+            tasks_obj.get("tasks") or [],
+            remaining_ids,
+            "/v1/images/generations",
+            "chapter_image_replacement",
+            "wc_image_batch_id",
+        )
+        if replacement:
+            return {
+                **_echo_payload(payload),
+                "wc_state_prefix": prefix,
+                "wc_image_batch_id": replacement["wc_image_batch_id"],
+                "wc_image_batch_status": "resubmitted",
+                "wc_image_batch_terminal": False,
+                "wc_image_batch_resubmitted": True,
+                "wc_image_request_counts": counts,
+            }
 
     return {
         **_echo_payload(payload),
@@ -1245,11 +1446,7 @@ def op_check_image_batch(payload: dict) -> dict:
         "wc_image_batch_id": batch_id,
         "wc_image_batch_status": batch.status,
         "wc_image_batch_terminal": terminal,
-        "wc_image_request_counts": {
-            "total": counts.total,
-            "completed": counts.completed,
-            "failed": counts.failed,
-        },
+        "wc_image_request_counts": counts,
     }
 
 
@@ -1264,7 +1461,7 @@ async def op_collect_image_results(payload: dict) -> dict:
     batch_id = pipe.get("current_batch_id")
 
     batch = sync_openai_client.batches.retrieve(batch_id)
-    if batch.status not in {"completed", "expired"}:
+    if batch.status not in {"completed", "expired", "failed", "cancelled"}:
         print(f"Image batch ended with status={batch.status}; skipping images.")
         save_state(prefix, "image_urls_by_index.json", {})
         return {
