@@ -70,6 +70,7 @@ resource "aws_lambda_function" "write_chapters" {
       SECTION_WORD_MAX               = "600"
       IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = "200"
       BATCH_POLL_INTERVAL            = "30"
+      BATCH_MAX_AGE_SECONDS          = "84600"
       BOOK_WORD_TARGET               = "35000"
       CHAPTER_WORD_TARGET            = "4500"
       CHAPTER_WORD_MIN               = "3600"
