@@ -25,6 +25,11 @@ resource "aws_iam_role_policy" "generate_cover_permissions" {
         Resource = aws_secretsmanager_secret.api_keys_v2.arn
       },
       {
+        Action   = "ssm:GetParameter",
+        Effect   = "Allow",
+        Resource = "arn:aws:ssm:*:*:parameter/AstrologyBookFactory/prompts/*"
+      },
+      {
         Action   = ["s3:PutObject", "s3:PutObjectAcl"],
         Effect   = "Allow",
         Resource = "${aws_s3_bucket.artifacts_bucket.arn}/book-covers/*"
@@ -35,8 +40,9 @@ resource "aws_iam_role_policy" "generate_cover_permissions" {
 
 resource "null_resource" "build_generate_cover_package" {
   triggers = {
-    app_py_hash      = filemd5("${path.module}/../src/generate_cover/app.py")
-    reqs_txt_hash    = filemd5("${path.module}/../src/generate_cover/requirements.txt")
+    app_py_hash       = filemd5("${path.module}/../src/generate_cover/app.py")
+    cover_art_py_hash = filemd5("${path.module}/../src/generate_cover/cover_art.py")
+    reqs_txt_hash     = filemd5("${path.module}/../src/generate_cover/requirements.txt")
     font_files_hash  = md5(join("", [for f in fileset("${path.module}/../src/generate_cover/fonts", "*") : filemd5("${path.module}/../src/generate_cover/fonts/${f}")]))
     build_recipe_rev = "lulu-cover-dimensions-v1"
   }
@@ -80,6 +86,10 @@ resource "aws_lambda_function" "generate_cover" {
       ARTIFACTS_BUCKET      = aws_s3_bucket.artifacts_bucket.id
       LULU_API_BASE         = "https://api.lulu.com"
       LULU_POD_PACKAGE_ID   = "0550X0850.BW.STD.LW.060UC444.MNG"
+      COVER_DYNAMIC_ENABLED   = "1"
+      MODEL_COVER_IMAGE       = "gpt-image-2"
+      COVER_IMAGE_SIZE        = "2560x1440"
+      COVER_PROMPT_SSM_NAME   = aws_ssm_parameter.cover_image_prompt.name
     }
   }
 }

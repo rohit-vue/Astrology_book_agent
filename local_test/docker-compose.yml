@@ -59,6 +59,7 @@ services:
     volumes:
       - ../src/generate_cover:/app/generate_cover:ro
       - ./run_generate_cover_local.py:/app/run_generate_cover_local.py:ro
+      - ./cover_art_local.py:/app/cover_art_local.py:ro
       - ./pipeline_config.json:/app/pipeline_config.json:ro
       - ./output:/app/output
     command: ["run_generate_cover_local.py"]

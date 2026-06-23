@@ -17,7 +17,12 @@ API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
 LULU_API_BASE = os.environ.get("LULU_API_BASE", "https://api.lulu.com").rstrip("/")
 LULU_POD_PACKAGE_ID = os.environ.get("LULU_POD_PACKAGE_ID", "0550X0850.BW.STD.LW.060UC444.MNG")
 TEXT_WRAP_WIDTH_RATIO = 0.85
-FRONT_COVER_PREVIEW_SIZE = (1024, 1792)
+FRONT_COVER_PREVIEW_WIDTH = 1024
+# Match Lulu front panel aspect (5.895" x 9") so preview JPG has no letterboxing.
+FRONT_COVER_PREVIEW_SIZE = (
+    FRONT_COVER_PREVIEW_WIDTH,
+    int(round(FRONT_COVER_PREVIEW_WIDTH * (9.0 / 5.895))),
+)
 
 
 def resolve_language_key(language: str) -> str:
@@ -110,17 +115,10 @@ def wrap_text(
 def resize_front_cover_preview(
     image: Image.Image,
     target_size: tuple[int, int] = FRONT_COVER_PREVIEW_SIZE,
-    background: tuple[int, int, int] = (0, 0, 0),
 ) -> Image.Image:
-    """Scale to fit inside target_size without cropping (letterbox on black)."""
+    """Crop/scale to fill target_size (no letterboxing)."""
     tw, th = target_size
-    fitted = image.copy()
-    fitted.thumbnail((tw, th), Image.Resampling.LANCZOS)
-    canvas = Image.new("RGB", (tw, th), background)
-    paste_x = (tw - fitted.width) // 2
-    paste_y = (th - fitted.height) // 2
-    canvas.paste(fitted, (paste_x, paste_y))
-    return canvas
+    return fit_image_cover_crop(image, tw, th)
 
 
 def draw_centered_text(
@@ -334,6 +332,76 @@ def _get_lulu_api_keys() -> tuple[str | None, str | None]:
     return secrets.get("LuluApiClientKey"), secrets.get("LuluApiClientSecret")
 
 
+def _get_openai_api_key() -> str | None:
+    key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OpenAIKey")
+    if key:
+        return key
+    if not API_KEYS_SECRET_ARN:
+        return None
+    secret_payload = secrets_manager.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
+    secrets = json.loads(secret_payload["SecretString"])
+    return secrets.get("OpenAIKey")
+
+
+def _cover_dynamic_enabled() -> bool:
+    return os.environ.get("COVER_DYNAMIC_ENABLED", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def try_generate_front_background(birth_data: dict) -> Image.Image | None:
+    """Generate GPT sky cover art, or None to fall back to black background."""
+    if not _cover_dynamic_enabled():
+        print("Dynamic cover art disabled (COVER_DYNAMIC_ENABLED=0). Using black background.")
+        return None
+
+    api_key = _get_openai_api_key()
+    if not api_key:
+        print("No OpenAI API key; using black background fallback.")
+        return None
+
+    try:
+        from cover_art import generate_cover_background_from_birth_data
+
+        return generate_cover_background_from_birth_data(birth_data, api_key)
+    except Exception as exc:
+        print(f"Dynamic cover art failed ({exc}); using black background fallback.")
+        return None
+
+
+def fit_image_cover_crop(
+    image: Image.Image,
+    width: int,
+    height: int,
+    *,
+    vertical_align: str = "center",
+) -> Image.Image:
+    """Resize image to cover width x height, then crop overflow."""
+    img = image.convert("RGB")
+    if width <= 0 or height <= 0:
+        raise ValueError("width and height must be positive")
+
+    target_ratio = width / height
+    src_ratio = img.width / img.height
+    if src_ratio > target_ratio:
+        new_w = int(img.height * target_ratio)
+        left = (img.width - new_w) // 2
+        img = img.crop((left, 0, left + new_w, img.height))
+    else:
+        new_h = int(img.width / target_ratio)
+        if vertical_align == "bottom":
+            top = img.height - new_h
+        elif vertical_align == "top":
+            top = 0
+        else:
+            top = (img.height - new_h) // 2
+        img = img.crop((0, top, img.width, top + new_h))
+    return img.resize((width, height), Image.Resampling.LANCZOS)
+
+
 def resolve_cover_layout_inches(page_count: int, pod_package_id: str) -> Tuple[float, float, float]:
     COVER_WIDTH = 5.895
     FLAP_WIDTH = 3.5
@@ -359,7 +427,10 @@ def resolve_cover_layout_inches(page_count: int, pod_package_id: str) -> Tuple[f
         return _legacy_cover_size_inches(page_count)
 
 
-def render_cover_canvas(payload: dict) -> tuple[Image.Image, dict]:
+def render_cover_canvas(
+    payload: dict,
+    front_background: Image.Image | None = None,
+) -> tuple[Image.Image, dict]:
     """Build full dust-jacket image plus front-panel crop box (x, y, w, h) in pixels."""
     page_count = int(payload["page_count"])
     language = payload.get("language", "English")
@@ -375,14 +446,19 @@ def render_cover_canvas(payload: dict) -> tuple[Image.Image, dict]:
 
     w_px = int(round(total_w_inch * DPI))
     h_px = int(round(total_h_inch * DPI))
-    canvas = Image.new("RGB", (w_px, h_px), "black")
-    draw = ImageDraw.Draw(canvas)
-
     front_x = int(round((BLEED + FLAP_WIDTH + COVER_WIDTH + spine_width) * DPI))
     front_y = int(round(BLEED * DPI))
     front_w = int(round(COVER_WIDTH * DPI))
     front_h = int(round((total_h_inch - 2 * BLEED) * DPI))
 
+    if front_background is not None:
+        canvas = fit_image_cover_crop(
+            front_background, w_px, h_px, vertical_align="bottom"
+        )
+    else:
+        canvas = Image.new("RGB", (w_px, h_px), "black")
+
+    draw = ImageDraw.Draw(canvas)
     draw_centered_stacked_rows(
         draw,
         build_front_cover_rows(payload),
@@ -407,12 +483,13 @@ def generate_cover_artifact(
     *,
     output_dir: str | None = None,
     upload_s3: bool = True,
+    front_background: Image.Image | None = None,
 ) -> dict:
     """Render cover PDF; optionally save locally and/or upload to S3."""
     order_id = payload["order_id"]
     line_item_id = payload["line_item_id"]
 
-    canvas, front_box = render_cover_canvas(payload)
+    canvas, front_box = render_cover_canvas(payload, front_background=front_background)
     dpi = front_box["dpi"]
     pdf_buffer = io.BytesIO()
     canvas.save(pdf_buffer, format="PDF", resolution=dpi)
@@ -481,7 +558,12 @@ def lambda_handler(event, context):
     payload.setdefault("birth_data", birth_data)
 
     try:
-        return generate_cover_artifact(payload, upload_s3=True)
+        front_background = try_generate_front_background(birth_data)
+        return generate_cover_artifact(
+            payload,
+            upload_s3=True,
+            front_background=front_background,
+        )
     except Exception as e:
         print(f"ERROR: {e}")
         raise

@@ -102,3 +102,22 @@ resource "aws_ssm_parameter" "writer_image_prompt" {
   type        = "SecureString"
   value       = "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
 }
+
+resource "aws_ssm_parameter" "cover_image_prompt" {
+  name        = "/AstrologyBookFactory/prompts/cover/image"
+  description = "Template for GPT cover background image (sky over birth city)"
+  type        = "SecureString"
+  value       = <<-EOT
+Photorealistic wide horizontal landscape photograph of the open sky above __PLACE_NAME__.__GEO_HINT__
+Captured at __TIME_LABEL__ on __DATE_LABEL__.
+The scene must match __TIME_PERIOD__ at this exact local time and place.
+__SKY_LIGHTING__ __SEASON_HINT__
+Horizon line low in the frame; most of the image is sky.
+A quiet, distant sense of the city far below — soft haze or far-off buildings only,
+not a skyline silhouette and not a dramatic cityscape.
+Do not show: __SKY_AVOID__.
+No text, no letters, no people, no planets, no moon emphasis,
+no constellations, no zodiac, no galaxy, no outer space effects.
+Keep the original ground as it would be at __PLACE_NAME__; include a famous building or memorial of that city/country to help identify the location.
+  EOT
+}
