@@ -121,14 +121,22 @@ sync_openai_client = OpenAI(
 _openai_configured = False
 _chapter_prompt_template_cache: str | None = None
 _image_prompt_template_cache: str | None = None
+_style_prompt_template_cache: str | None = None
 
 IMAGE_PROMPT_FALLBACK = (
     "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. "
     "Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
 )
 
+STYLE_PROMPT_FALLBACK = (
+    "Analyze the following astrological data. Based on its core energies, describe the ideal "
+    "writing tone and style for a personal book about '__FOCUS__' in **__LANGUAGE__**. "
+    "Keep it concise.\n\nDATA:\n__ASTROLOGY_DATA__"
+)
+
 CHAPTER_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/chapter"
 IMAGE_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/image"
+STYLE_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/style_analysis"
 CHAPTER_PROMPT_FALLBACK = """Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 **Language:** __LANGUAGE__
 **Style:** __STYLE__
@@ -177,6 +185,41 @@ def get_image_prompt_template() -> str:
     return _image_prompt_template_cache
 
 
+def get_style_prompt_template() -> str:
+    global _style_prompt_template_cache
+    if _style_prompt_template_cache:
+        return _style_prompt_template_cache
+    try:
+        value = ssm_client.get_parameter(
+            Name=STYLE_PROMPT_SSM_NAME, WithDecryption=True
+        )["Parameter"]["Value"].strip()
+        if not value:
+            raise ValueError("SSM style prompt parameter is empty")
+        _style_prompt_template_cache = value
+    except Exception as e:
+        print(f"SSM style prompt not found; using fallback: {e}")
+        _style_prompt_template_cache = STYLE_PROMPT_FALLBACK
+    return _style_prompt_template_cache
+
+
+def render_style_analysis_prompt(
+    template: str,
+    focus: str,
+    language: str,
+    astrology_data: dict,
+) -> str:
+    astrology_json = json.dumps(astrology_data, ensure_ascii=False)
+    replacements = {
+        "__FOCUS__": focus,
+        "__LANGUAGE__": language,
+        "__ASTROLOGY_DATA__": astrology_json,
+    }
+    rendered = template
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    return rendered
+
+
 def render_chapter_prompt(
     template: str,
     chapter_num: int,
@@ -207,7 +250,6 @@ def render_chapter_prompt(
         "__CHAPTER_WORD_MIN__": str(CHAPTER_WORD_MIN),
         "__CHAPTER_WORD_MAX__": str(CHAPTER_WORD_MAX),
         "__ASTROLOGY_DATA__": astrology_json,
-        "__NATAL_CHART__": astrology_json,
     }
     rendered = template
     for token, value in replacements.items():
@@ -426,6 +468,7 @@ def _section_descriptions_from_structure(structure: dict) -> tuple[str, str, str
 
 
 def default_style(focus: str, language: str) -> str:
+    """Static fallback when SSM/GPT style analysis fails."""
     return (
         f"Language: {language}. "
         f"Focus: {focus}. "
@@ -436,23 +479,45 @@ def default_style(focus: str, language: str) -> str:
     )
 
 
+async def generate_writing_style(chart: dict, focus: str, language: str) -> str:
+    """Build writing style from SSM style_analysis prompt + full astrology-json chart."""
+    template = get_style_prompt_template()
+    prompt = render_style_analysis_prompt(template, focus, language, chart)
+    try:
+        style_resp = await async_openai_client.responses.create(
+            model=MODEL_CONTENT,
+            input=[{"role": "user", "content": prompt}],
+            text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_STYLE},
+            reasoning={"effort": REASONING_EFFORT_STYLE},
+            max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
+        )
+        style = _response_text_from_obj(style_resp).strip()
+        if not style:
+            raise ValueError("empty style analysis response")
+        print(f"Generated writing style profile ({len(style)} chars)")
+        return style
+    except Exception as e:
+        print(f"Style generation failed, using fallback style: {e}")
+        return default_style(focus, language)
+
+
 def _section_batch_prompt(name: str, description: str, style: str, language: str) -> str:
     return f"""Generate narrative prose content for a personal astrology book section.
-Section Type: {name}
-Language: {language}
-Style: {style}
-Context: {description}
-Word Contract: Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
-Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
-Layout Rule: This section must fit on two printed pages. End with a complete sentence.
-Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
-STRICT RULES:
-- Output only body text.
-- No headings or titles.
-- No markdown.
-- No labels.
-- Start directly with prose.
-- Use second person POV."""
+        Section Type: {name}
+        Language: {language}
+        Style: {style}
+        Context: {description}
+        Word Contract: Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
+        Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
+        Layout Rule: This section must fit on two printed pages. End with a complete sentence.
+        Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
+        STRICT RULES:
+        - Output only body text.
+        - No headings or titles.
+        - No markdown.
+        - No labels.
+        - Start directly with prose.
+        - Use second person POV."""
 
 
 def build_section_batch_tasks(structure: dict, style: str, language: str):
@@ -1075,46 +1140,7 @@ def configure_openai():
 
 
 async def prepare_style_and_sections(chart, structure, focus, language):
-    style_chart = build_style_chart_snapshot(chart)
-    try:
-        style_resp = await async_openai_client.responses.create(
-            model=MODEL_CONTENT,
-            input=[{
-                "role": "user",
-                "content": (
-                    f"Generate a concise writing style profile for a personal astrology book.\n"
-                    f"Focus: {focus}\n"
-                    f"Language: {language}\n"
-                    f"Chart snapshot: {json.dumps(style_chart, ensure_ascii=False)}\n\n"
-                    "Return strict JSON with keys:\n"
-                    "{"
-                    "\"tone\":\"max 20 words\","
-                    "\"voice_rules\":[\"max 5 short rules\"],"
-                    "\"avoid\":[\"max 4 short anti-patterns\"]"
-                    "}\n"
-                    "Do not add any text outside JSON."
-                ),
-            }],
-            text={"format": {"type": "json_object"}, "verbosity": TEXT_VERBOSITY_STYLE},
-            reasoning={"effort": REASONING_EFFORT_STYLE},
-            max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
-        )
-        style_json = json.loads(_response_text_from_obj(style_resp))
-        tone = (style_json.get("tone") or "").strip()
-        rules = [r.strip() for r in style_json.get("voice_rules", []) if isinstance(r, str) and r.strip()]
-        avoids = [a.strip() for a in style_json.get("avoid", []) if isinstance(a, str) and a.strip()]
-        style = (
-            f"Tone: {tone}. "
-            f"Voice rules: {'; '.join(rules[:5])}. "
-            f"Avoid: {'; '.join(avoids[:4])}."
-        )
-    except Exception as e:
-        print(f"Style generation failed, using fallback style: {e}")
-        style = (
-            "Tone: Warm, psychologically precise, compassionate, direct second-person. "
-            "Voice rules: concrete language; grounded interpretation; practical guidance; emotionally honest pacing; no fluff. "
-            "Avoid: generic filler; moralizing; vague advice; melodrama."
-        )
+    style = await generate_writing_style(chart, focus, language)
 
     preface_desc, prologue_desc, epilogue_desc = _section_descriptions_from_structure(structure)
 
@@ -1154,7 +1180,7 @@ async def op_submit_text_batch(payload: dict) -> dict:
 
     chart = s3_get_json(payload["astrology_json_s3_path"])
     structure = s3_get_json(payload["book_structure_s3_path"])
-    style = default_style(focus, language)
+    style = await generate_writing_style(chart, focus, language)
 
     struct_inner = structure.get("structure", {})
     chapters_list = structure.get("chapters") or struct_inner.get("chapters", [])

@@ -93,7 +93,7 @@ resource "aws_ssm_parameter" "writer_style_prompt" {
   name        = "/AstrologyBookFactory/prompts/writer/style_analysis"
   description = "Prompt to analyze tone"
   type        = "SecureString"
-  value       = "Analyze the following astrological data. Based on its core energies, describe the ideal writing tone and style for a personal book about '__FOCUS__' in **__LANGUAGE__**. Keep it concise.\n\nDATA:\n__NATAL_CHART__"
+  value       = "Analyze the following astrological data. Based on its core energies, describe the ideal writing tone and style for a personal book about '__FOCUS__' in **__LANGUAGE__**. Keep it concise.\n\nDATA:\n__ASTROLOGY_DATA__"
 }
 
 resource "aws_ssm_parameter" "writer_image_prompt" {
@@ -105,19 +105,38 @@ resource "aws_ssm_parameter" "writer_image_prompt" {
 
 resource "aws_ssm_parameter" "cover_image_prompt" {
   name        = "/AstrologyBookFactory/prompts/cover/image"
-  description = "Template for GPT cover background image (sky over birth city)"
+  description = "Template for GPT cover background image (deep-space astrophotography)"
   type        = "SecureString"
   value       = <<-EOT
-Photorealistic wide horizontal landscape photograph of the open sky above __PLACE_NAME__.__GEO_HINT__
-Captured at __TIME_LABEL__ on __DATE_LABEL__.
-The scene must match __TIME_PERIOD__ at this exact local time and place.
-__SKY_LIGHTING__ __SEASON_HINT__
-Horizon line low in the frame; most of the image is sky.
-A quiet, distant sense of the city far below — soft haze or far-off buildings only,
-not a skyline silhouette and not a dramatic cityscape.
-Do not show: __SKY_AVOID__.
-No text, no letters, no people, no planets, no moon emphasis,
-no constellations, no zodiac, no galaxy, no outer space effects.
-Keep the original ground as it would be at __PLACE_NAME__; include a famous building or memorial of that city/country to help identify the location.
+Photorealistic deep-space astrophotography view from directly above __GEO_HINT__ at __TIME_LABEL__ on __DATE_LABEL__.
+
+Perspective: as if an astronaut is floating in space above Earth, looking outward into the cosmos from the exact coordinates and local time.
+
+The celestial scene must reflect the sky orientation that would exist above this location and moment in time.
+
+Ultra-detailed Milky Way star fields, dense stellar populations, subtle interstellar dust clouds, realistic galactic structure, scientifically plausible celestial alignment, natural astrophotography appearance.
+
+No Earth visible.
+No atmosphere.
+No horizon.
+No spacecraft.
+No astronauts.
+No satellites.
+
+The frame should be entirely filled with deep space and stars.
+
+Visual style similar to long-exposure professional space telescope photography:
+millions of stars, bright stellar clusters, dark dust lanes, faint nebula texture, high dynamic range, exceptional clarity, realistic color balance.
+
+No text.
+No zodiac symbols.
+No constellations overlays.
+No astrology graphics.
+No fantasy effects.
+No glowing sacred geometry.
+No planets dominating the frame.
+No moon emphasis.
+
+Natural cosmic realism only.
   EOT
 }

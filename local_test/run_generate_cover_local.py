@@ -3,7 +3,7 @@
 Render cover locally using src/generate_cover/app.py (same as Lambda).
 
 Optional dynamic front cover art (local preview only):
-  - GPT image of sky over birth city from birth_data lat/lon + datetime
+  - GPT image of sky from birth_data lat/lon + datetime (no geocoding API)
   - Same white title/focus/birth text as production black cover
   - Falls back to plain black if art generation fails
 

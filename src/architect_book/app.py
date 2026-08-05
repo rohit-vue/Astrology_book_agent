@@ -214,7 +214,7 @@ def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
     return len(errors) == 0, errors
 
 
-def get_prompts_from_ssm(natal_chart_json: dict, focus: str, language: str, qanda: str) -> tuple[str, str]:
+def get_prompts_from_ssm(astrology_data: dict, focus: str, language: str, qanda: str) -> tuple[str, str]:
     try:
         sys_param = ssm_client.get_parameter(
             Name="/AstrologyBookFactory/prompts/architect/system", WithDecryption=True
@@ -232,7 +232,7 @@ def get_prompts_from_ssm(natal_chart_json: dict, focus: str, language: str, qand
     system_prompt = system_template.replace("__LANGUAGE__", language)
     user_prompt = user_template.replace("__FOCUS__", focus)
     user_prompt = user_prompt.replace("__LANGUAGE__", language)
-    user_prompt = user_prompt.replace("__ASTROLOGY_DATA__", json.dumps(natal_chart_json, indent=2))
+    user_prompt = user_prompt.replace("__ASTROLOGY_DATA__", json.dumps(astrology_data, indent=2))
     safe_qanda = qanda[:15000] if qanda else "No Q&A provided."
     user_prompt = user_prompt.replace("__QANDA__", safe_qanda)
     return system_prompt, user_prompt
