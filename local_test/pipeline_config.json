@@ -2,15 +2,15 @@
   "order_id": "LOCAL_TEST_002",
   "line_item_id": "LOCAL_ITEM_002",
   "birth_data": {
-    "day": 30,
-    "month": 5,
-    "year": 1995,
-    "hour": 14,
-    "min": 23,
-    "lat": 25.321684, 
-    "lon": 82.987289,
+    "day": 26,
+    "month": 1,
+    "year": 2002,
+    "hour": 12,
+    "min": 0,
+    "lat": 26.4499, 
+    "lon": 80.3319,
     "tzone": 5.5
   },
-  "focus": "Personality",
+  "focus": "Personal Development",
   "language": "English"
 }

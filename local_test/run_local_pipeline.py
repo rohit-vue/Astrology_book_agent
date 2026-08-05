@@ -122,20 +122,15 @@ def fetch_astrology(birth_data, order_id):
     vedic_auth = (ASTRO_VEDIC_UID, ASTRO_VEDIC_KEY)
 
     today = datetime.now()
-    sr_payload = {**birth_data, "sr_year": today.year}
     transit_payload = {**birth_data, "trans_date": today.strftime("%d-%m-%Y")}
 
     charts = {
-        "AYANAMSHA": ("ayanamsha", vedic_auth, birth_data),
-        "PLANETS_EXTENDED": ("planets/extended", western_auth, birth_data),
-        "BHAV_MADHYA": ("astro_details", vedic_auth, birth_data),
         "WESTERN_HOROSCOPE": ("western_horoscope", western_auth, birth_data),
+        "NATAL_TRANSITS": ("natal_transits/daily", western_auth, transit_payload),
+        "PLANETS": ("planets", western_auth, birth_data),
+        "SHADBALA": ("shadbala", vedic_auth, birth_data),
+        "BHAVABALA": ("bhavabala", vedic_auth, birth_data),
         "VDASHA": ("current_vdasha", vedic_auth, birth_data),
-        "CHARDASHA": ("current_chardasha", vedic_auth, birth_data),
-        "SOLAR_RETURN_HOUSES": ("solar_return_house_cusps", western_auth, sr_payload),
-        "SOLAR_RETURN_PLANETS": ("solar_return_planets", western_auth, sr_payload),
-        "SOLAR_RETURN_ASPECTS": ("solar_return_planet_aspects", western_auth, sr_payload),
-        "TRANSITS": ("tropical_transits/daily", western_auth, transit_payload),
     }
 
     comprehensive_data = {

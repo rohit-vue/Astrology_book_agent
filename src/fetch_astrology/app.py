@@ -42,12 +42,17 @@ def lambda_handler(event, context):
         western_auth = (api_keys['AstrologyWesternUserID'], api_keys['AstrologyWesternAPIKey'])
         vedic_auth = (api_keys['AstrologyVedicUserID'], api_keys['AstrologyVedicAPIKey'])
 
-        main_payload = birth_data
         today = datetime.now()
-        sr_payload = {**birth_data, "sr_year": today.year}
         transit_payload = {**birth_data, "trans_date": today.strftime('%d-%m-%Y')}
+        charts = {
+            "WESTERN_HOROSCOPE": ("western_horoscope", western_auth, birth_data),
+            "NATAL_TRANSITS": ("natal_transits/daily", western_auth, transit_payload),
+            "PLANETS": ("planets", western_auth, birth_data),
+            "SHADBALA": ("shadbala", vedic_auth, birth_data),
+            "BHAVABALA": ("bhavabala", vedic_auth, birth_data),
+            "VDASHA": ("current_vdasha", vedic_auth, birth_data),
+        }
 
-        
         comprehensive_data = {
             "META": {
                 "Order_ID": order_id,
@@ -57,65 +62,12 @@ def lambda_handler(event, context):
             "CHARTS": {}
         }
 
-        comprehensive_data["CHARTS"]["AYANAMSHA"] = {
-            "Description": "Ayanamsha Calculation",
-            "Endpoint": "ayanamsha",
-            "Data": call_astrology_api("ayanamsha", vedic_auth, main_payload)
-        }
-
-        comprehensive_data["CHARTS"]["PLANETS_EXTENDED"] = {
-            "Description": "Extended Planetary Positions",
-            "Endpoint": "planets/extended",
-            "Data": call_astrology_api("planets/extended", western_auth, main_payload)
-        }
-
-        comprehensive_data["CHARTS"]["BHAV_MADHYA"] = {
-            "Description": "Vedic Basic Details (Ascendant & Nakshatra)",
-            "Endpoint": "astro_details",
-            "Data": call_astrology_api("astro_details", vedic_auth, main_payload)
-        }
-
-        comprehensive_data["CHARTS"]["WESTERN_HOROSCOPE"] = {
-            "Description": "Standard Western Natal Chart",
-            "Endpoint": "western_horoscope",
-            "Data": call_astrology_api("western_horoscope", western_auth, main_payload)
-        }
-
-        comprehensive_data["CHARTS"]["VDASHA"] = {
-            "Description": "Vedic Astro Details (Reliable Endpoint)",
-            "Endpoint": "current_vdasha",
-            "Data": call_astrology_api("current_vdasha", vedic_auth, main_payload)
-        }
-
-        comprehensive_data["CHARTS"]["CHARDASHA"] = {
-            "Description": "Chardasha (Current)",
-            "Endpoint": "current_chardasha",
-            "Data": call_astrology_api("current_chardasha", vedic_auth, main_payload)
-        }
-
-        comprehensive_data["CHARTS"]["SOLAR_RETURN_HOUSES"] = {
-            "Description": "Solar Return House Cusps for Current Year",
-            "Endpoint": "solar_return_house_cusps",
-            "Data": call_astrology_api("solar_return_house_cusps", western_auth, sr_payload)
-        }
-
-        comprehensive_data["CHARTS"]["SOLAR_RETURN_PLANETS"] = {
-            "Description": "Solar Return Planetary Positions",
-            "Endpoint": "solar_return_planets",
-            "Data": call_astrology_api("solar_return_planets", western_auth, sr_payload)
-        }
-
-        comprehensive_data["CHARTS"]["SOLAR_RETURN_ASPECTS"] = {
-            "Description": "Solar Return Planet Aspects",
-            "Endpoint": "solar_return_planet_aspects",
-            "Data": call_astrology_api("solar_return_planet_aspects", western_auth, sr_payload)
-        }
-
-        comprehensive_data["CHARTS"]["TRANSITS"] = {
-            "Description": "Daily Tropical Transits",
-            "Endpoint": "tropical_transits/daily",
-            "Data": call_astrology_api("tropical_transits/daily", western_auth, transit_payload)
-        }
+        for key, (endpoint, auth, payload) in charts.items():
+            comprehensive_data["CHARTS"][key] = {
+                "Description": key,
+                "Endpoint": endpoint,
+                "Data": call_astrology_api(endpoint, auth, payload),
+            }
 
         output_key = f"astrology-json/{order_id}/{line_item_id}.json"
         s3_client.put_object(
@@ -130,5 +82,5 @@ def lambda_handler(event, context):
         error_msg = str(e)
         if hasattr(e, 'response') and e.response is not None:
              error_msg += f" | Body: {e.response.text}"
-        print(f"FATAL ERROR calling {endpoint}: {error_msg}")
+        print(f"FATAL ERROR fetching astrology data: {error_msg}")
         return None

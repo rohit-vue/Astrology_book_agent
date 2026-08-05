@@ -64,10 +64,9 @@ IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = _env_int("IMAGE_SUMMARY_MAX_OUTPUT_TOKENS", 20
 
 BATCH_POLL_INTERVAL = _env_int("BATCH_POLL_INTERVAL", 15)
 BATCH_MAX_AGE_SECONDS = _env_int("BATCH_MAX_AGE_SECONDS", 84600)
-BOOK_WORD_TARGET = _env_int("BOOK_WORD_TARGET", 50000)
-CHAPTER_WORD_TARGET = _env_int("CHAPTER_WORD_TARGET", 7750)
-CHAPTER_WORD_MIN = _env_int("CHAPTER_WORD_MIN", 7500)
-CHAPTER_WORD_MAX = _env_int("CHAPTER_WORD_MAX", 8000)
+CHAPTER_WORD_TARGET = _env_int("CHAPTER_WORD_TARGET", 4200)
+CHAPTER_WORD_MIN = _env_int("CHAPTER_WORD_MIN", 600)
+CHAPTER_WORD_MAX = _env_int("CHAPTER_WORD_MAX", 6000)
 CJK_MIN_LENGTH_RATIO = _env_float("CJK_MIN_LENGTH_RATIO", 0.62)
 MAX_BATCH_RETRIES = _env_int("MAX_BATCH_RETRIES", 1)
 IMAGE_MIN_BYTES = _env_int("IMAGE_MIN_BYTES", 50000)
@@ -142,7 +141,6 @@ CHAPTER_PROMPT_FALLBACK = """Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 **Style:** __STYLE__
 **Focus:** __FOCUS__
 **Summary:** __SUMMARY__
-**Book Contract:** The complete book targets ~__BOOK_WORD_TARGET__ words total across all chapters.
 **Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words(EXTREMELY IMPORTANT).
 **Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
 **Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.
@@ -245,7 +243,6 @@ def render_chapter_prompt(
         "__FOCUS__": focus,
         "__SUMMARY__": description,
         "__CHAPTER_SUMMARY__": description,
-        "__BOOK_WORD_TARGET__": str(BOOK_WORD_TARGET),
         "__WORD_TARGET__": str(word_target),
         "__CHAPTER_WORD_MIN__": str(CHAPTER_WORD_MIN),
         "__CHAPTER_WORD_MAX__": str(CHAPTER_WORD_MAX),

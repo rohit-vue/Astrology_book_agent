@@ -53,7 +53,8 @@ CHAPTER_MAX_OUTPUT_TOKENS = 48000
 REASONING_EFFORT_ARCHITECT = "high"
 TEXT_VERBOSITY_ARCHITECT = "high"
 ARCHITECT_MAX_OUTPUT_TOKENS = 24000
-ARCHITECT_EXPECTED_CHAPTERS = 7
+ARCHITECT_MIN_CHAPTERS = 5
+ARCHITECT_MAX_CHAPTERS = 10
 ARCHITECT_MAX_RETRIES = 2
 
 # Style profile (structured JSON — keep reasoning moderate, text less verbose)
@@ -70,10 +71,10 @@ IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = 200
 IMAGE_MIN_BYTES = 50000
 
 BATCH_POLL_INTERVAL = 15  # seconds between status checks
-BOOK_WORD_TARGET = 50000
-CHAPTER_WORD_TARGET = 7750
-CHAPTER_WORD_MIN = 7500
-CHAPTER_WORD_MAX = 8000
+# Fixed per-chapter length; total book length scales with chapter count (5–14).
+CHAPTER_WORD_TARGET = 2000
+CHAPTER_WORD_MIN = 1500
+CHAPTER_WORD_MAX = 2500
 MAX_BATCH_RETRIES = 3
 
 BATCH_ENDPOINT_RESPONSES = "/v1/responses"
@@ -101,7 +102,9 @@ Analyze the provided astrological data. Your primary creative goal is to design 
     - Prefer Maximum 10-11 words total for the book title.
 
 **STRUCTURE RULES:**
-You must generate a book outline with EXACTLY 7 CHAPTERS.
+Choose how many chapters the book needs based on the astrological data and "__FOCUS__".
+You MUST output between __MIN_CHAPTERS__ and __MAX_CHAPTERS__ chapter objects (inclusive).
+Do not output fewer than __MIN_CHAPTERS__ or more than __MAX_CHAPTERS__.
 Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
 
 **TECHNICAL MANDATE: JSON OUTPUT**
@@ -305,8 +308,11 @@ def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
             errors.append(f"structure.{key} missing or empty")
 
     chapters = _chapters_from_structure(data)
-    if len(chapters) != ARCHITECT_EXPECTED_CHAPTERS:
-        errors.append(f"expected {ARCHITECT_EXPECTED_CHAPTERS} chapters, got {len(chapters)}")
+    n = len(chapters)
+    if n < ARCHITECT_MIN_CHAPTERS or n > ARCHITECT_MAX_CHAPTERS:
+        errors.append(
+            f"expected {ARCHITECT_MIN_CHAPTERS}-{ARCHITECT_MAX_CHAPTERS} chapters, got {n}"
+        )
     for idx, chapter in enumerate(chapters, start=1):
         if not isinstance(chapter, dict):
             errors.append(f"chapter {idx} is not an object")
@@ -473,20 +479,15 @@ def fetch_astrology(birth_data, order_id):
     vedic_auth = (ASTRO_VEDIC_UID, ASTRO_VEDIC_KEY)
 
     today = datetime.now()
-    sr_payload = {**birth_data, "sr_year": today.year}
     transit_payload = {**birth_data, "trans_date": today.strftime("%d-%m-%Y")}
 
     charts = {
-        "AYANAMSHA": ("ayanamsha", vedic_auth, birth_data),
-        "PLANETS_EXTENDED": ("planets/extended", western_auth, birth_data),
-        "BHAV_MADHYA": ("astro_details", vedic_auth, birth_data),
         "WESTERN_HOROSCOPE": ("western_horoscope", western_auth, birth_data),
+        "NATAL_TRANSITS": ("natal_transits/daily", western_auth, transit_payload),
+        "PLANETS": ("planets", western_auth, birth_data),
+        "SHADBALA": ("shadbala", vedic_auth, birth_data),
+        "BHAVABALA": ("bhavabala", vedic_auth, birth_data),
         "VDASHA": ("current_vdasha", vedic_auth, birth_data),
-        "CHARDASHA": ("current_chardasha", vedic_auth, birth_data),
-        "SOLAR_RETURN_HOUSES": ("solar_return_house_cusps", western_auth, sr_payload),
-        "SOLAR_RETURN_PLANETS": ("solar_return_planets", western_auth, sr_payload),
-        "SOLAR_RETURN_ASPECTS": ("solar_return_planet_aspects", western_auth, sr_payload),
-        "TRANSITS": ("tropical_transits/daily", western_auth, transit_payload),
     }
 
     comprehensive_data = {
@@ -528,6 +529,8 @@ def architect_book(astrology_data, focus, language):
         .replace("__FOCUS__", focus)
         .replace("__LANGUAGE__", language)
         .replace("__ASTROLOGY_DATA__", json.dumps(astrology_data, indent=2))
+        .replace("__MIN_CHAPTERS__", str(ARCHITECT_MIN_CHAPTERS))
+        .replace("__MAX_CHAPTERS__", str(ARCHITECT_MAX_CHAPTERS))
     )
 
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -611,7 +614,6 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"**Style:** {style}\n"
             f"**Focus:** {focus}\n"
             f"**Summary:** {description}\n"
-            f"**Book Contract:** The complete book targets ~{BOOK_WORD_TARGET} words total across all chapters.\n"
             f"**Word Contract:** Target {word_target} words for this chapter. Mandatory range {CHAPTER_WORD_MIN}-{CHAPTER_WORD_MAX} words.\n"
             f"**Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.\n"
             f"**Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, "

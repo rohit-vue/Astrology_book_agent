@@ -15,6 +15,7 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
   name        = "/AstrologyBookFactory/prompts/architect/user"
   description = "User prompt for the Book Architect AI"
   type        = "SecureString"
+  depends_on  = [aws_lambda_function.architect_book]
   value       = <<-EOT
     **CRITICAL LANGUAGE REQUIREMENT:**
     The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
@@ -27,7 +28,9 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
     - Prefer Maximum 10-11 words total for the book title.
     
     **STRUCTURE RULES:**
-    You must generate a book outline with EXACTLY 7 CHAPTERS.
+    Choose how many chapters the book needs based on the astrological data and "__FOCUS__".
+    You MUST output between __MIN_CHAPTERS__ and __MAX_CHAPTERS__ chapter objects (inclusive).
+    Do not output fewer than __MIN_CHAPTERS__ or more than __MAX_CHAPTERS__.
     Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
 
     **TECHNICAL MANDATE: JSON OUTPUT**
@@ -73,7 +76,6 @@ Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 **Style:** __STYLE__
 **Focus:** __FOCUS__
 **Summary:** __SUMMARY__
-**Book Contract:** The complete book targets ~__BOOK_WORD_TARGET__ words total across all chapters.
 **Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words (EXTREMELY IMPORTANT).
 **Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
 **Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.

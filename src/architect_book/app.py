@@ -30,7 +30,8 @@ MODEL_ID = _env_str("MODEL_ARCHITECT", "gpt-5.5")
 REASONING_EFFORT_ARCHITECT = _env_str("REASONING_EFFORT_ARCHITECT", "high")
 TEXT_VERBOSITY_ARCHITECT = _env_str("TEXT_VERBOSITY_ARCHITECT", "high")
 ARCHITECT_MAX_OUTPUT_TOKENS = _env_int("ARCHITECT_MAX_OUTPUT_TOKENS", 24000)
-ARCHITECT_EXPECTED_CHAPTERS = _env_int("ARCHITECT_EXPECTED_CHAPTERS", 7)
+ARCHITECT_MIN_CHAPTERS = _env_int("ARCHITECT_MIN_CHAPTERS", 1)
+ARCHITECT_MAX_CHAPTERS = _env_int("ARCHITECT_MAX_CHAPTERS", 14)
 ARCHITECT_MAX_RETRIES = _env_int("ARCHITECT_MAX_RETRIES", 2)
 OPENAI_TIMEOUT_SECONDS = _env_int("OPENAI_TIMEOUT_SECONDS", 120)
 OPENAI_MAX_RETRIES = _env_int("OPENAI_MAX_RETRIES", 1)
@@ -76,7 +77,9 @@ The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE
 Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
 
 **STRUCTURE RULES:**
-You must generate a book outline with EXACTLY 7 CHAPTERS.
+Choose how many chapters the book needs based on the astrological data and "__FOCUS__".
+You MUST output between __MIN_CHAPTERS__ and __MAX_CHAPTERS__ chapter objects (inclusive).
+Do not output fewer than __MIN_CHAPTERS__ or more than __MAX_CHAPTERS__.
 Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
 
 Use this Q&A context to personalize the outline where relevant:
@@ -198,9 +201,10 @@ def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
             errors.append(f"structure.{key} missing or empty")
 
     chapters = _chapters_from_structure(data)
-    if len(chapters) != ARCHITECT_EXPECTED_CHAPTERS:
+    if not ARCHITECT_MIN_CHAPTERS <= len(chapters) <= ARCHITECT_MAX_CHAPTERS:
         errors.append(
-            f"expected {ARCHITECT_EXPECTED_CHAPTERS} chapters, got {len(chapters)}"
+            f"expected {ARCHITECT_MIN_CHAPTERS}-{ARCHITECT_MAX_CHAPTERS} "
+            f"chapters, got {len(chapters)}"
         )
     for idx, chapter in enumerate(chapters, start=1):
         if not isinstance(chapter, dict):
@@ -233,6 +237,8 @@ def get_prompts_from_ssm(astrology_data: dict, focus: str, language: str, qanda:
     user_prompt = user_template.replace("__FOCUS__", focus)
     user_prompt = user_prompt.replace("__LANGUAGE__", language)
     user_prompt = user_prompt.replace("__ASTROLOGY_DATA__", json.dumps(astrology_data, indent=2))
+    user_prompt = user_prompt.replace("__MIN_CHAPTERS__", str(ARCHITECT_MIN_CHAPTERS))
+    user_prompt = user_prompt.replace("__MAX_CHAPTERS__", str(ARCHITECT_MAX_CHAPTERS))
     safe_qanda = qanda[:15000] if qanda else "No Q&A provided."
     user_prompt = user_prompt.replace("__QANDA__", safe_qanda)
     return system_prompt, user_prompt

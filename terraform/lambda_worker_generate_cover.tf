@@ -80,6 +80,9 @@ resource "aws_lambda_function" "generate_cover" {
     aws_lambda_layer_version.shared_libraries.arn
   ]
 
+  lifecycle {
+    ignore_changes = all
+  }
   environment {
     variables = {
       API_KEYS_SECRET_ARN   = aws_secretsmanager_secret.api_keys_v2.arn
