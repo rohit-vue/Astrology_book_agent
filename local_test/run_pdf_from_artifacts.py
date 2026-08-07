@@ -3,12 +3,13 @@
 Build a PDF from cached pipeline output only (no Astrology API, no OpenAI).
 
 Expects under output/:
-  artifacts/astrology_data.json      — birth data in META.Input_Parameters
   artifacts/book_structure.json      — metadata + chapter titles (from architect)
   artifacts/chapter_N.json           — chapter_title, chapter_text
   artifacts/generated_sections.json  — preface_text, prologue_text, epilogue_text
                                        (written automatically after a full pipeline run)
   images/chapter_N.png               — optional chapter art
+
+Birth data / focus / language come from pipeline_config.json (not astrology META).
 
 If generated_sections.json is missing (older runs), preface/prologue/epilogue render empty.
 
@@ -33,8 +34,10 @@ def _chapter_json_sort_key(path: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def load_birth_data(astrology: dict) -> dict:
-    params = (astrology.get("META") or {}).get("Input_Parameters") or {}
+def load_birth_data(config: dict) -> dict:
+    params = config.get("birth_data") or {}
+    if not isinstance(params, dict) or not params:
+        raise ValueError("pipeline_config.json is missing birth_data")
     bd = dict(params)
     if "minute" in bd and "min" not in bd:
         bd["min"] = bd["minute"]
@@ -57,30 +60,21 @@ def main():
 
     language = config.get("language", "English")
     focus = config.get("focus", "Personality")
+    birth_data = load_birth_data(config)
     print(f"[local artifacts] Language from pipeline_config.json: {language}")
     print(f"[local artifacts] Focus from pipeline_config.json: {focus}")
+    print(f"[local artifacts] Birth data from pipeline_config.json: {json.dumps(birth_data)}")
 
-    astro_path = os.path.join(ARTIFACTS_DIR, "astrology_data.json")
     struct_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
     sections_path = os.path.join(ARTIFACTS_DIR, "generated_sections.json")
 
-    for path, label in (
-        (astro_path, "astrology_data.json"),
-        (struct_path, "book_structure.json"),
-    ):
-        if not os.path.isfile(path):
-            print(f"ERROR: Missing {label} at {path}. Run the full pipeline first.")
-            sys.exit(1)
-
-    with open(astro_path, "r", encoding="utf-8") as f:
-        astrology_data = json.load(f)
-    print(f"[local artifacts] Loaded birth/footer inputs from disk: {astro_path}")
+    if not os.path.isfile(struct_path):
+        print(f"ERROR: Missing book_structure.json at {struct_path}. Run the full pipeline first.")
+        sys.exit(1)
 
     with open(struct_path, "r", encoding="utf-8") as f:
         structure = json.load(f)
     print(f"[local artifacts] Loaded book title & metadata from disk: {struct_path}")
-
-    birth_data = load_birth_data(astrology_data)
 
     struct_inner = structure.get("structure") or {}
     metadata = structure.get("metadata") or struct_inner.get("metadata") or {}

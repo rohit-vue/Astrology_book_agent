@@ -18,7 +18,7 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
   depends_on  = [aws_lambda_function.architect_book]
   value       = <<-EOT
     **CRITICAL LANGUAGE REQUIREMENT:**
-    The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
+    The Book Title, Chapter Titles, Themes, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
 
     **TASK:**
     Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
@@ -26,7 +26,16 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
     **RULES FOR THE MAIN BOOK TITLE AND CHAPTER TITLES:**
     - Maximum 70 total characters INCLUDING spaces.
     - Prefer Maximum 10-11 words total for the book title.
-    
+
+    **CHAPTER OBJECT RULES (CRITICAL):**
+    Each chapter object MUST contain exactly these three fields:
+    - "title": a poetic, publishable chapter heading (what appears in the table of contents).
+    - "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
+    - "description": a detailed writing brief that expands on the theme for the chapter writer.
+    "title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
+    Good: title="Begin Where Your Nervous System Feels Safe", theme="Inner safety before outer expansion"
+    Bad: title="Begin Where Your Nervous System Feels Safe", theme="Begin Where Your Nervous System Feels Safe"
+
     **STRUCTURE RULES:**
     Choose how many chapters the book needs based on the astrological data and "__FOCUS__".
     You MUST output between __MIN_CHAPTERS__ and __MAX_CHAPTERS__ chapter objects (inclusive).
@@ -54,7 +63,11 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
         "prologue_description": "...",
         "epilogue_description": "...",
         "chapters": [
-          { "title": "Chapter Title (in __LANGUAGE__)", "description": "A detailed summary (in __LANGUAGE__)." }
+          {
+            "title": "Chapter Title (in __LANGUAGE__)",
+            "theme": "Short conceptual theme distinct from title (in __LANGUAGE__)",
+            "description": "A detailed summary (in __LANGUAGE__)."
+          }
         ]
       }
     }
@@ -75,6 +88,7 @@ Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 **Language:** __LANGUAGE__
 **Style:** __STYLE__
 **Focus:** __FOCUS__
+**Theme:** __CHAPTER_THEME__
 **Summary:** __SUMMARY__
 **Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words (EXTREMELY IMPORTANT).
 **Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.

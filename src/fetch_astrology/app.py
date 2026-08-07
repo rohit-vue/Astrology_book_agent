@@ -55,9 +55,7 @@ def lambda_handler(event, context):
 
         comprehensive_data = {
             "META": {
-                "Order_ID": order_id,
                 "Request_Date": today.isoformat(),
-                "Input_Parameters": birth_data
             },
             "CHARTS": {}
         }

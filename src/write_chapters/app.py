@@ -184,6 +184,13 @@ def render_style_analysis_prompt(
     return rendered
 
 
+def _normalize_chapter_label(value: str) -> str:
+    """Normalize title/theme for equality checks (case/punct/whitespace insensitive)."""
+    text = str(value or "").casefold().strip()
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def render_chapter_prompt(
     template: str,
     chapter_num: int,
@@ -194,10 +201,19 @@ def render_chapter_prompt(
     description: str,
     word_target: int,
     astrology_data: dict,
-    chapter_theme: str | None = None,
+    chapter_theme: str,
 ) -> str:
     """Substitute SSM chapter template tokens (legacy + current naming)."""
-    theme = (chapter_theme or title).strip() or title
+    theme = str(chapter_theme or "").strip()
+    if not theme:
+        raise ValueError(
+            f"chapter {chapter_num} missing theme "
+            "(refusing to default theme to title)"
+        )
+    if _normalize_chapter_label(theme) == _normalize_chapter_label(title):
+        raise ValueError(
+            f"chapter {chapter_num} theme equals title; refusing to default theme to title"
+        )
     astrology_json = json.dumps(astrology_data, ensure_ascii=False)
     replacements = {
         "__CHAPTER_NUM__": str(chapter_num),
@@ -619,9 +635,22 @@ def build_chapter_batch_tasks(
     manifest = {}
     for idx, ch in enumerate(chapters_list):
         chapter_num = idx + 1
-        title = ch["title"]
-        description = ch["description"]
-        chapter_theme = ch.get("theme") or title
+        title = str(ch.get("title", "")).strip()
+        theme = str(ch.get("theme", "")).strip()
+        description = str(ch.get("description", "")).strip()
+        if not title:
+            raise ValueError(f"chapter {chapter_num} missing title")
+        if not theme:
+            raise ValueError(
+                f"chapter {chapter_num} missing theme "
+                "(architect must provide theme distinct from title)"
+            )
+        if _normalize_chapter_label(title) == _normalize_chapter_label(theme):
+            raise ValueError(
+                f"chapter {chapter_num} theme equals title; refusing to default theme to title"
+            )
+        if not description:
+            raise ValueError(f"chapter {chapter_num} missing description")
         custom_id = f"chapter-{chapter_num}"
 
         prompt = render_chapter_prompt(
@@ -634,7 +663,7 @@ def build_chapter_batch_tasks(
             description,
             word_target,
             astrology_data,
-            chapter_theme=chapter_theme,
+            chapter_theme=theme,
         )
 
         tasks.append(

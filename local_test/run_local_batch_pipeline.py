@@ -92,7 +92,7 @@ Your persona is wise, insightful, and empathetic.
 **CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**."""
 
 ARCHITECT_USER_PROMPT = """**CRITICAL LANGUAGE REQUIREMENT:**
-The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
+The Book Title, Chapter Titles, Themes, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
 
 **TASK:**
 Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
@@ -100,6 +100,15 @@ Analyze the provided astrological data. Your primary creative goal is to design 
     **RULES FOR THE MAIN BOOK TITLE AND CHAPTER TITLES:**
     - Maximum 70 total characters INCLUDING spaces.
     - Prefer Maximum 10-11 words total for the book title.
+
+**CHAPTER OBJECT RULES (CRITICAL):**
+Each chapter object MUST contain exactly these three fields:
+- "title": a poetic, publishable chapter heading (what appears in the table of contents).
+- "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
+- "description": a detailed writing brief that expands on the theme for the chapter writer.
+"title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
+Good: title="Begin Where Your Nervous System Feels Safe", theme="Inner safety before outer expansion"
+Bad: title="Begin Where Your Nervous System Feels Safe", theme="Begin Where Your Nervous System Feels Safe"
 
 **STRUCTURE RULES:**
 Choose how many chapters the book needs based on the astrological data and "__FOCUS__".
@@ -128,7 +137,11 @@ Your entire response MUST be a single, valid JSON object.
     "prologue_description": "...",
     "epilogue_description": "...",
     "chapters": [
-      { "title": "Chapter Title (in __LANGUAGE__)", "description": "A detailed summary (in __LANGUAGE__)." }
+      {
+        "title": "Chapter Title (in __LANGUAGE__)",
+        "theme": "Short conceptual theme distinct from title (in __LANGUAGE__)",
+        "description": "A detailed summary (in __LANGUAGE__)."
+      }
     ]
   }
 }
@@ -277,6 +290,13 @@ def _chapters_from_structure(data: dict) -> list:
     return top if isinstance(top, list) else []
 
 
+def _normalize_chapter_label(value: str) -> str:
+    """Normalize title/theme for equality checks (case/punct/whitespace insensitive)."""
+    text = str(value or "").casefold().strip()
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
     errors = []
     if not isinstance(data, dict):
@@ -317,10 +337,20 @@ def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
         if not isinstance(chapter, dict):
             errors.append(f"chapter {idx} is not an object")
             continue
-        if not str(chapter.get("title", "")).strip():
+        title = str(chapter.get("title", "")).strip()
+        theme = str(chapter.get("theme", "")).strip()
+        description = str(chapter.get("description", "")).strip()
+        if not title:
             errors.append(f"chapter {idx} title missing or empty")
-        if not str(chapter.get("description", "")).strip():
+        if not theme:
+            errors.append(f"chapter {idx} theme missing or empty")
+        if not description:
             errors.append(f"chapter {idx} description missing or empty")
+        if title and theme and _normalize_chapter_label(title) == _normalize_chapter_label(theme):
+            errors.append(
+                f"chapter {idx} theme must differ from title "
+                f"(got theme equal to title: {title!r})"
+            )
 
     return len(errors) == 0, errors
 
@@ -492,9 +522,7 @@ def fetch_astrology(birth_data, order_id):
 
     comprehensive_data = {
         "META": {
-            "Order_ID": order_id,
             "Request_Date": today.isoformat(),
-            "Input_Parameters": birth_data,
         },
         "CHARTS": {},
     }
@@ -575,6 +603,10 @@ def architect_book(astrology_data, focus, language):
         if ok:
             chapters = _chapters_from_structure(structure)
             print(f"  Generated valid structure with {len(chapters)} chapters.")
+            for i, ch in enumerate(chapters, start=1):
+                print(
+                    f"    Chapter {i}: {ch.get('title', '')} | theme: {ch.get('theme', '')}"
+                )
             out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(structure, f, indent=2, ensure_ascii=False)
@@ -604,8 +636,22 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
 
     for idx, ch in enumerate(chapters_list):
         chapter_num = idx + 1
-        title = ch["title"]
-        description = ch["description"]
+        title = str(ch.get("title", "")).strip()
+        theme = str(ch.get("theme", "")).strip()
+        description = str(ch.get("description", "")).strip()
+        if not title:
+            raise ValueError(f"chapter {chapter_num} missing title")
+        if not theme:
+            raise ValueError(
+                f"chapter {chapter_num} missing theme "
+                "(architect must provide theme distinct from title)"
+            )
+        if _normalize_chapter_label(title) == _normalize_chapter_label(theme):
+            raise ValueError(
+                f"chapter {chapter_num} theme equals title; refusing to default theme to title"
+            )
+        if not description:
+            raise ValueError(f"chapter {chapter_num} missing description")
         custom_id = f"chapter-{chapter_num}"
 
         prompt = (
@@ -613,6 +659,7 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"**Language:** {language}\n"
             f"**Style:** {style}\n"
             f"**Focus:** {focus}\n"
+            f"**Theme:** {theme}\n"
             f"**Summary:** {description}\n"
             f"**Word Contract:** Target {word_target} words for this chapter. Mandatory range {CHAPTER_WORD_MIN}-{CHAPTER_WORD_MAX} words.\n"
             f"**Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.\n"
@@ -650,7 +697,7 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
         tasks.append(task)
         manifest[custom_id] = {"chapter_index": chapter_num, "chapter_title": title}
 
-        print(f"    Task '{custom_id}': Chapter {chapter_num} - {title}")
+        print(f"    Task '{custom_id}': Chapter {chapter_num} - {title} | theme: {theme}")
         print(f"      Prompt length: {len(prompt):,} chars")
         print(f"      max_output_tokens: {CHAPTER_MAX_OUTPUT_TOKENS} (reasoning={REASONING_EFFORT_CHAPTER}, verbosity={TEXT_VERBOSITY_CHAPTER})")
 

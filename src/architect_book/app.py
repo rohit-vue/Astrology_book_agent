@@ -1,6 +1,7 @@
 import boto3
 import json
 import os
+import re
 from botocore.config import Config
 from openai import OpenAI
 from urllib.parse import urlparse
@@ -122,6 +123,13 @@ def _chapters_from_structure(data: dict) -> list:
     return top if isinstance(top, list) else []
 
 
+def _normalize_chapter_label(value: str) -> str:
+    """Normalize title/theme for equality checks (case/punct/whitespace insensitive)."""
+    text = str(value or "").casefold().strip()
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
     errors: list[str] = []
     if not isinstance(data, dict):
@@ -162,10 +170,20 @@ def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
         if not isinstance(chapter, dict):
             errors.append(f"chapter {idx} is not an object")
             continue
-        if not str(chapter.get("title", "")).strip():
+        title = str(chapter.get("title", "")).strip()
+        theme = str(chapter.get("theme", "")).strip()
+        description = str(chapter.get("description", "")).strip()
+        if not title:
             errors.append(f"chapter {idx} title missing or empty")
-        if not str(chapter.get("description", "")).strip():
+        if not theme:
+            errors.append(f"chapter {idx} theme missing or empty")
+        if not description:
             errors.append(f"chapter {idx} description missing or empty")
+        if title and theme and _normalize_chapter_label(title) == _normalize_chapter_label(theme):
+            errors.append(
+                f"chapter {idx} theme must differ from title "
+                f"(got theme equal to title: {title!r})"
+            )
 
     return len(errors) == 0, errors
 
@@ -233,8 +251,10 @@ def architect_book_structure(system_prompt: str, user_prompt: str) -> dict:
 
         ok, errors = validate_book_structure(full_structure)
         if ok:
-            chapter_count = len(_chapters_from_structure(full_structure))
-            print(f"Generated valid structure with {chapter_count} chapters.")
+            chapters = _chapters_from_structure(full_structure)
+            print(f"Generated valid structure with {len(chapters)} chapters.")
+            for i, ch in enumerate(chapters, start=1):
+                print(f"  Chapter {i}: {ch.get('title', '')} | theme: {ch.get('theme', '')}")
             return full_structure
 
         last_errors = errors

@@ -56,10 +56,19 @@ Your persona is wise, insightful, and empathetic.
 **CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**."""
 
 ARCHITECT_USER_PROMPT = """**CRITICAL LANGUAGE REQUIREMENT:**
-The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
+The Book Title, Chapter Titles, Themes, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
 
 **TASK:**
 Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
+
+**CHAPTER OBJECT RULES (CRITICAL):**
+Each chapter object MUST contain exactly these three fields:
+- "title": a poetic, publishable chapter heading (what appears in the table of contents).
+- "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
+- "description": a detailed writing brief that expands on the theme for the chapter writer.
+"title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
+Good: title="Begin Where Your Nervous System Feels Safe", theme="Inner safety before outer expansion"
+Bad: title="Begin Where Your Nervous System Feels Safe", theme="Begin Where Your Nervous System Feels Safe"
 
 **STRUCTURE RULES:**
 You must generate a book outline with EXACTLY 7 CHAPTERS.
@@ -86,7 +95,11 @@ Your entire response MUST be a single, valid JSON object.
     "prologue_description": "...",
     "epilogue_description": "...",
     "chapters": [
-      { "title": "Chapter Title (in __LANGUAGE__)", "description": "A detailed summary (in __LANGUAGE__)." }
+      {
+        "title": "Chapter Title (in __LANGUAGE__)",
+        "theme": "Short conceptual theme distinct from title (in __LANGUAGE__)",
+        "description": "A detailed summary (in __LANGUAGE__)."
+      }
     ]
   }
 }
@@ -135,9 +148,7 @@ def fetch_astrology(birth_data, order_id):
 
     comprehensive_data = {
         "META": {
-            "Order_ID": order_id,
             "Request_Date": today.isoformat(),
-            "Input_Parameters": birth_data,
         },
         "CHARTS": {},
     }
@@ -189,6 +200,14 @@ def architect_book(astrology_data, focus, language):
     structure = json.loads(resp.choices[0].message.content)
     chapters = structure.get("structure", {}).get("chapters", [])
     print(f"  Generated structure with {len(chapters)} chapters.")
+    for i, ch in enumerate(chapters, start=1):
+        title = str(ch.get("title", "")).strip()
+        theme = str(ch.get("theme", "")).strip()
+        if not theme:
+            raise ValueError(f"chapter {i} missing theme")
+        if title.casefold().strip() == theme.casefold().strip():
+            raise ValueError(f"chapter {i} theme must differ from title: {title!r}")
+        print(f"    Chapter {i}: {title} | theme: {theme}")
 
     out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
     with open(out_path, "w", encoding="utf-8") as f:
@@ -234,15 +253,22 @@ async def generate_section(client, name, description, style, language):
 
 
 async def write_single_chapter(client, idx, details, chart, target, focus, style, language):
-    title = details["title"]
-    print(f"  Starting Chapter {idx}: {title}")
+    title = str(details.get("title", "")).strip()
+    theme = str(details.get("theme", "")).strip()
+    description = str(details.get("description", "")).strip()
+    if not theme:
+        raise ValueError(f"chapter {idx} missing theme (refusing to default theme to title)")
+    if title.casefold() == theme.casefold():
+        raise ValueError(f"chapter {idx} theme equals title; refusing to proceed")
+    print(f"  Starting Chapter {idx}: {title} | theme: {theme}")
 
     prompt = f"""
     Write Chapter {idx}: "{title}".
     **Language:** {language}
     **Style:** {style}
     **Focus:** {focus}
-    **Summary:** {details['description']}
+    **Theme:** {theme}
+    **Summary:** {description}
     **Word Target:** {target}
     **Formatting:** Plain paragraphs. No bold. No headers.
     **Data:** {json.dumps(chart)}
