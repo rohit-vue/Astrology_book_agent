@@ -25,37 +25,6 @@ COVER_PROMPT_SSM_NAME = os.environ.get(
     "/AstrologyBookFactory/prompts/cover/image",
 )
 
-COVER_IMAGE_PROMPT_FALLBACK = """Photorealistic deep-space astrophotography view from directly above __GEO_HINT__ at __TIME_LABEL__ on __DATE_LABEL__.
-
-Perspective: as if an astronaut is floating in space above Earth, looking outward into the cosmos from the exact coordinates and local time.
-
-The celestial scene must reflect the sky orientation that would exist above this location and moment in time.
-
-Ultra-detailed Milky Way star fields, dense stellar populations, subtle interstellar dust clouds, realistic galactic structure, scientifically plausible celestial alignment, natural astrophotography appearance.
-
-No Earth visible.
-No atmosphere.
-No horizon.
-No spacecraft.
-No astronauts.
-No satellites.
-
-The frame should be entirely filled with deep space and stars.
-
-Visual style similar to long-exposure professional space telescope photography:
-millions of stars, bright stellar clusters, dark dust lanes, faint nebula texture, high dynamic range, exceptional clarity, realistic color balance.
-
-No text.
-No zodiac symbols.
-No constellations overlays.
-No astrology graphics.
-No fantasy effects.
-No glowing sacred geometry.
-No planets dominating the frame.
-No moon emphasis.
-
-Natural cosmic realism only."""
-
 _cover_prompt_template_cache: str | None = None
 
 
@@ -96,19 +65,14 @@ def get_cover_image_prompt_template() -> str:
     if _cover_prompt_template_cache:
         return _cover_prompt_template_cache
 
-    try:
-        value = ssm_client.get_parameter(
-            Name=COVER_PROMPT_SSM_NAME,
-            WithDecryption=True,
-        )["Parameter"]["Value"].strip()
-        if not value:
-            raise ValueError("SSM cover prompt parameter is empty")
-        _cover_prompt_template_cache = value
-        print(f"Loaded cover image prompt from SSM: {COVER_PROMPT_SSM_NAME}")
-    except Exception as exc:
-        print(f"SSM cover prompt unavailable; using code fallback: {exc}")
-        _cover_prompt_template_cache = COVER_IMAGE_PROMPT_FALLBACK
-
+    value = ssm_client.get_parameter(
+        Name=COVER_PROMPT_SSM_NAME,
+        WithDecryption=True,
+    )["Parameter"]["Value"].strip()
+    if not value:
+        raise ValueError(f"SSM cover prompt parameter is empty: {COVER_PROMPT_SSM_NAME}")
+    _cover_prompt_template_cache = value
+    print(f"Loaded cover image prompt from SSM: {COVER_PROMPT_SSM_NAME}")
     return _cover_prompt_template_cache
 
 

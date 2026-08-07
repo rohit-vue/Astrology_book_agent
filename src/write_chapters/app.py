@@ -122,50 +122,21 @@ _chapter_prompt_template_cache: str | None = None
 _image_prompt_template_cache: str | None = None
 _style_prompt_template_cache: str | None = None
 
-IMAGE_PROMPT_FALLBACK = (
-    "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. "
-    "Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
-)
-
-STYLE_PROMPT_FALLBACK = (
-    "Analyze the following astrological data. Based on its core energies, describe the ideal "
-    "writing tone and style for a personal book about '__FOCUS__' in **__LANGUAGE__**. "
-    "Keep it concise.\n\nDATA:\n__ASTROLOGY_DATA__"
-)
-
 CHAPTER_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/chapter"
 IMAGE_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/image"
 STYLE_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/style_analysis"
-CHAPTER_PROMPT_FALLBACK = """Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
-**Language:** __LANGUAGE__
-**Style:** __STYLE__
-**Focus:** __FOCUS__
-**Summary:** __SUMMARY__
-**Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words(EXTREMELY IMPORTANT).
-**Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
-**Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.
-**Formatting:** Plain paragraphs. No bold. No headers.
-**Paragraphing (critical for layout):** Write like a printed book chapter, not chat.
-- **Vary paragraph length deliberately.** Mix shorter paragraphs (often **3-5 sentences**, about **2–3 printed lines**) with medium and longer ones. Do **not** settle into a steady rhythm where every paragraph is the same size.
-- **Short paragraphs are allowed** for emphasis, a turn in thought, or a breath between ideas—use them **sometimes**, not after every sentence.
-- Longer paragraphs are fine when the idea needs room; neighbor paragraphs may be much shorter so the page does not look like uniform blocks.
-- Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.
-- Use **double newlines (blank line)** ONLY between **major sections**. **At most 8–10 double-newlines in the whole chapter.**
-**Output Rule:** Return only final chapter prose.
-**Data:** __ASTROLOGY_DATA__"""
 
 
 def get_chapter_prompt_template() -> str:
     global _chapter_prompt_template_cache
     if _chapter_prompt_template_cache:
         return _chapter_prompt_template_cache
-    try:
-        _chapter_prompt_template_cache = ssm_client.get_parameter(
-            Name=CHAPTER_PROMPT_SSM_NAME, WithDecryption=True
-        )["Parameter"]["Value"]
-    except Exception as e:
-        print(f"SSM chapter prompt not found; using fallback: {e}")
-        _chapter_prompt_template_cache = CHAPTER_PROMPT_FALLBACK
+    value = ssm_client.get_parameter(
+        Name=CHAPTER_PROMPT_SSM_NAME, WithDecryption=True
+    )["Parameter"]["Value"].strip()
+    if not value:
+        raise ValueError(f"SSM chapter prompt parameter is empty: {CHAPTER_PROMPT_SSM_NAME}")
+    _chapter_prompt_template_cache = value
     return _chapter_prompt_template_cache
 
 
@@ -173,13 +144,12 @@ def get_image_prompt_template() -> str:
     global _image_prompt_template_cache
     if _image_prompt_template_cache:
         return _image_prompt_template_cache
-    try:
-        _image_prompt_template_cache = ssm_client.get_parameter(
-            Name=IMAGE_PROMPT_SSM_NAME, WithDecryption=True
-        )["Parameter"]["Value"]
-    except Exception as e:
-        print(f"SSM image prompt not found; using fallback: {e}")
-        _image_prompt_template_cache = IMAGE_PROMPT_FALLBACK
+    value = ssm_client.get_parameter(
+        Name=IMAGE_PROMPT_SSM_NAME, WithDecryption=True
+    )["Parameter"]["Value"].strip()
+    if not value:
+        raise ValueError(f"SSM image prompt parameter is empty: {IMAGE_PROMPT_SSM_NAME}")
+    _image_prompt_template_cache = value
     return _image_prompt_template_cache
 
 
@@ -187,16 +157,12 @@ def get_style_prompt_template() -> str:
     global _style_prompt_template_cache
     if _style_prompt_template_cache:
         return _style_prompt_template_cache
-    try:
-        value = ssm_client.get_parameter(
-            Name=STYLE_PROMPT_SSM_NAME, WithDecryption=True
-        )["Parameter"]["Value"].strip()
-        if not value:
-            raise ValueError("SSM style prompt parameter is empty")
-        _style_prompt_template_cache = value
-    except Exception as e:
-        print(f"SSM style prompt not found; using fallback: {e}")
-        _style_prompt_template_cache = STYLE_PROMPT_FALLBACK
+    value = ssm_client.get_parameter(
+        Name=STYLE_PROMPT_SSM_NAME, WithDecryption=True
+    )["Parameter"]["Value"].strip()
+    if not value:
+        raise ValueError(f"SSM style prompt parameter is empty: {STYLE_PROMPT_SSM_NAME}")
+    _style_prompt_template_cache = value
     return _style_prompt_template_cache
 
 
@@ -464,38 +430,22 @@ def _section_descriptions_from_structure(structure: dict) -> tuple[str, str, str
     return preface_desc, prologue_desc, epilogue_desc
 
 
-def default_style(focus: str, language: str) -> str:
-    """Static fallback when SSM/GPT style analysis fails."""
-    return (
-        f"Language: {language}. "
-        f"Focus: {focus}. "
-        "Tone: Warm, psychologically precise, compassionate, direct second-person. "
-        "Voice rules: concrete language; grounded interpretation; practical guidance; "
-        "emotionally honest pacing; no fluff. "
-        "Avoid: generic filler; moralizing; vague advice; melodrama."
-    )
-
-
 async def generate_writing_style(chart: dict, focus: str, language: str) -> str:
     """Build writing style from SSM style_analysis prompt + full astrology-json chart."""
     template = get_style_prompt_template()
     prompt = render_style_analysis_prompt(template, focus, language, chart)
-    try:
-        style_resp = await async_openai_client.responses.create(
-            model=MODEL_CONTENT,
-            input=[{"role": "user", "content": prompt}],
-            text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_STYLE},
-            reasoning={"effort": REASONING_EFFORT_STYLE},
-            max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
-        )
-        style = _response_text_from_obj(style_resp).strip()
-        if not style:
-            raise ValueError("empty style analysis response")
-        print(f"Generated writing style profile ({len(style)} chars)")
-        return style
-    except Exception as e:
-        print(f"Style generation failed, using fallback style: {e}")
-        return default_style(focus, language)
+    style_resp = await async_openai_client.responses.create(
+        model=MODEL_CONTENT,
+        input=[{"role": "user", "content": prompt}],
+        text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_STYLE},
+        reasoning={"effort": REASONING_EFFORT_STYLE},
+        max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
+    )
+    style = _response_text_from_obj(style_resp).strip()
+    if not style:
+        raise ValueError("empty style analysis response")
+    print(f"Generated writing style profile ({len(style)} chars)")
+    return style
 
 
 def _section_batch_prompt(name: str, description: str, style: str, language: str) -> str:
@@ -1092,8 +1042,9 @@ async def generate_chapter_images_batch(chapters_data, image_prompt_template, or
     image_batch_id = submit_batch(sync_openai_client, image_tasks, "/v1/images/generations", "chapter_image")
     image_batch = poll_batch_until_done(sync_openai_client, image_batch_id)
     if image_batch.status not in {"completed", "expired"}:
-        print(f"Image batch ended with status={image_batch.status}; skipping images.")
-        return chapters_data
+        raise RuntimeError(
+            f"Image batch ended with status={image_batch.status}; refusing to continue without images."
+        )
 
     merged_images_by_id, failed_image_ids = collect_image_batch_results(sync_openai_client, image_batch)
     missing_ids = set(image_manifest.keys()) - set(merged_images_by_id.keys())
@@ -1117,6 +1068,12 @@ async def generate_chapter_images_batch(chapters_data, image_prompt_template, or
         merged_images_by_id.update(retry_images_by_id)
         failed_image_ids = set(retry_ids) - set(merged_images_by_id.keys())
         failed_image_ids |= (set(retry_failed_ids) & set(retry_ids))
+
+    if failed_image_ids:
+        raise ValueError(
+            "Chapter images incomplete after retries; missing or invalid: "
+            + ", ".join(sorted(failed_image_ids))
+        )
 
     return apply_images_to_chapters(
         chapters_data, image_manifest, merged_images_by_id, order_id, line_item_id
@@ -1485,14 +1442,10 @@ async def op_collect_image_results(payload: dict) -> dict:
 
     batch = sync_openai_client.batches.retrieve(batch_id)
     if batch.status not in {"completed", "expired", "failed", "cancelled"}:
-        print(f"Image batch ended with status={batch.status}; skipping images.")
-        save_state(prefix, "image_urls_by_index.json", {})
-        return {
-            **_echo_payload(payload),
-            "wc_state_prefix": prefix,
-            "wc_image_collect_complete": True,
-            "wc_image_track_need_wait": False,
-        }
+        raise RuntimeError(
+            f"Image batch ended with unexpected status={batch.status}; "
+            "refusing to finalize without images."
+        )
 
     existing_keys = dict(pipe.get("image_s3_keys_by_id") or {})
     merged_keys, failed_ids = collect_and_store_image_results(
@@ -1538,6 +1491,12 @@ async def op_collect_image_results(payload: dict) -> dict:
             "wc_image_collect_complete": False,
         }
 
+    if failed_custom:
+        raise ValueError(
+            "Chapter images incomplete after retries; missing or invalid: "
+            + ", ".join(sorted(failed_custom))
+        )
+
     urls_by_index = _presigned_urls_from_s3_keys(merged_keys, manifest)
     save_state(prefix, "image_urls_by_index.json", urls_by_index)
 
@@ -1573,6 +1532,17 @@ async def op_finalize(payload: dict) -> dict:
             continue
         if idx in by_idx:
             by_idx[idx]["image_url"] = url
+
+    missing_images = [
+        str(ch["chapter_index"])
+        for ch in chapters_data
+        if not str(ch.get("image_url") or "").strip()
+    ]
+    if missing_images:
+        raise ValueError(
+            "Missing chapter images; refusing to finalize without images for chapters: "
+            + ", ".join(missing_images)
+        )
 
     structure = s3_get_json(base["book_structure_s3_path"])
 

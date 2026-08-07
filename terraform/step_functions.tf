@@ -399,7 +399,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                           Next = "CollectImageResults"
                         }
                       ],
-                      Default = "ImageTrackSkipped"
+                      Default = "WriteChaptersImageFailed"
                     },
                     CollectImageResults = {
                       Type     = "Task",
@@ -433,15 +433,10 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                       Type = "Pass",
                       End  = true
                     },
-                    ImageTrackSkipped = {
-                      Type    = "Pass",
-                      Comment = "Image batch failed before completion (e.g. cancelled); finalize without images.",
-                      End     = true
-                    },
                     WriteChaptersImageFailed = {
                       Type  = "Fail",
                       Error = "WriteChaptersImageTrackFailed",
-                      Cause = "Image batch collect did not finish successfully."
+                      Cause = "Image batch did not complete successfully or collect failed."
                     }
                   }
                 }

@@ -1050,8 +1050,10 @@ async def generate_chapter_images_batch(sync_client, async_client, chapters_data
     image_batch = poll_batch_until_done(sync_client, image_batch_id)
 
     if image_batch.status not in {"completed", "expired"}:
-        print(f"  WARNING: Image batch ended with status={image_batch.status}.")
-        return chapters_data
+        raise RuntimeError(
+            f"Image batch ended with status={image_batch.status}; "
+            "refusing to continue without images."
+        )
 
     merged_images_by_id, failed_image_ids = collect_image_batch_results(
         sync_client, image_batch, image_manifest, artifact_prefix="chapter_image",
@@ -1100,7 +1102,10 @@ async def generate_chapter_images_batch(sync_client, async_client, chapters_data
 
     chapters_data, missing_images = apply_images_to_chapters(chapters_data, image_manifest, merged_images_by_id)
     if missing_images:
-        print(f"  WARNING: Final missing image IDs after retries: {missing_images}")
+        raise ValueError(
+            "Chapter images incomplete after retries; missing or invalid: "
+            + ", ".join(sorted(missing_images))
+        )
     return chapters_data
 
 

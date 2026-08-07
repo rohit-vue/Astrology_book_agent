@@ -66,54 +66,6 @@ METADATA_KEYS = (
 UI_LABEL_KEYS = ("toc_title", "chapter_prefix")
 SECTION_DESC_KEYS = ("preface_description", "prologue_description", "epilogue_description")
 
-ARCHITECT_SYSTEM_PROMPT_FALLBACK = """You are an ASI (Artificial Superintelligence) acting as a master psychological interpreter and book architect.
-Your persona is wise, insightful, and empathetic.
-**CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**."""
-
-ARCHITECT_USER_PROMPT_FALLBACK = """**CRITICAL LANGUAGE REQUIREMENT:**
-The Book Title, Chapter Titles, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
-
-**TASK:**
-Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
-
-**STRUCTURE RULES:**
-Choose how many chapters the book needs based on the astrological data and "__FOCUS__".
-You MUST output between __MIN_CHAPTERS__ and __MAX_CHAPTERS__ chapter objects (inclusive).
-Do not output fewer than __MIN_CHAPTERS__ or more than __MAX_CHAPTERS__.
-Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
-
-Use this Q&A context to personalize the outline where relevant:
-__QANDA__
-
-**TECHNICAL MANDATE: JSON OUTPUT**
-Your entire response MUST be a single, valid JSON object.
-{
-  "metadata": {
-    "title": "Book Title (in __LANGUAGE__)",
-    "subtitle": "Subtitle (in __LANGUAGE__)",
-    "footer_text": "Footer in __LANGUAGE__",
-    "preface_title": "Preface Title in __LANGUAGE__",
-    "prologue_title": "Prologue Title in __LANGUAGE__",
-    "epilogue_title": "Epilogue Title in __LANGUAGE__",
-    "dedication_title": "Career by Design or similar (in __LANGUAGE__)"
-  },
-  "ui_labels": {
-    "toc_title": "Contents (in __LANGUAGE__)",
-    "chapter_prefix": "Chapter (in __LANGUAGE__)"
-  },
-  "structure": {
-    "preface_description": "...",
-    "prologue_description": "...",
-    "epilogue_description": "...",
-    "chapters": [
-      { "title": "Chapter Title (in __LANGUAGE__)", "description": "A detailed summary (in __LANGUAGE__)." }
-    ]
-  }
-}
-
-**Comprehensive Astrological Data:**
-__ASTROLOGY_DATA__"""
-
 
 def parse_s3_path(s3_path):
     parsed = urlparse(s3_path, allow_fragments=False)
@@ -219,19 +171,18 @@ def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
 
 
 def get_prompts_from_ssm(astrology_data: dict, focus: str, language: str, qanda: str) -> tuple[str, str]:
-    try:
-        sys_param = ssm_client.get_parameter(
-            Name="/AstrologyBookFactory/prompts/architect/system", WithDecryption=True
-        )
-        user_param = ssm_client.get_parameter(
-            Name="/AstrologyBookFactory/prompts/architect/user", WithDecryption=True
-        )
-        system_template = sys_param["Parameter"]["Value"]
-        user_template = user_param["Parameter"]["Value"]
-    except Exception as e:
-        print(f"Error fetching prompts from SSM, using fallback prompts: {e}")
-        system_template = ARCHITECT_SYSTEM_PROMPT_FALLBACK
-        user_template = ARCHITECT_USER_PROMPT_FALLBACK
+    sys_param = ssm_client.get_parameter(
+        Name="/AstrologyBookFactory/prompts/architect/system", WithDecryption=True
+    )
+    user_param = ssm_client.get_parameter(
+        Name="/AstrologyBookFactory/prompts/architect/user", WithDecryption=True
+    )
+    system_template = (sys_param["Parameter"]["Value"] or "").strip()
+    user_template = (user_param["Parameter"]["Value"] or "").strip()
+    if not system_template:
+        raise ValueError("SSM architect system prompt is empty")
+    if not user_template:
+        raise ValueError("SSM architect user prompt is empty")
 
     system_prompt = system_template.replace("__LANGUAGE__", language)
     user_prompt = user_template.replace("__FOCUS__", focus)

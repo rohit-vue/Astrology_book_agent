@@ -353,7 +353,11 @@ def _cover_dynamic_enabled() -> bool:
 
 
 def try_generate_front_background(birth_data: dict) -> Image.Image | None:
-    """Generate GPT sky cover art, or None to fall back to black background."""
+    """Generate GPT sky cover art, or None to fall back to black background.
+
+    SSM cover prompt must load successfully; missing/empty prompt fails the Lambda.
+    OpenAI image generation failures still soft-fall back to black.
+    """
     if not _cover_dynamic_enabled():
         print("Dynamic cover art disabled (COVER_DYNAMIC_ENABLED=0). Using black background.")
         return None
@@ -363,9 +367,15 @@ def try_generate_front_background(birth_data: dict) -> Image.Image | None:
         print("No OpenAI API key; using black background fallback.")
         return None
 
-    try:
-        from cover_art import generate_cover_background_from_birth_data
+    from cover_art import (
+        generate_cover_background_from_birth_data,
+        get_cover_image_prompt_template,
+    )
 
+    # Require SSM prompt before soft-fail path (do not ship with a code fallback prompt).
+    get_cover_image_prompt_template()
+
+    try:
         return generate_cover_background_from_birth_data(birth_data, api_key)
     except Exception as exc:
         print(f"Dynamic cover art failed ({exc}); using black background fallback.")

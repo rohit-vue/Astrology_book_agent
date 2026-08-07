@@ -318,8 +318,10 @@ async def write_chapters(astrology_data, structure, focus, language):
             max_completion_tokens=100,
         )
         style = style_resp.choices[0].message.content.strip()
-    except Exception:
-        style = "Warm"
+        if not style:
+            raise ValueError("empty style analysis response")
+    except Exception as e:
+        raise RuntimeError(f"Style generation failed; refusing default_style fallback: {e}") from e
     print(f"  Style: {style[:80]}...")
 
     # Resolve descriptions from structure
