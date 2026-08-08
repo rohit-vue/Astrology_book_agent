@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Smoke-test gpt-5.4-mini-2026-03-17 with the OpenAI Python client.
+Smoke-test gpt-5.4-mini with OpenAI Structured Outputs (json_schema).
 
 Set OPENAI_API_KEY in local_test/.env (or repo-root .env), then:
 
@@ -19,6 +19,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from structured_schemas import (
+    BIRTH_DATA_SCHEMA,
+    book_structure_schema,
+    chat_response_format,
+)
+
 HERE = Path(__file__).resolve().parent
 load_dotenv(HERE / ".env")
 load_dotenv(HERE.parent / ".env")
@@ -35,43 +41,57 @@ def _api_key() -> str:
 
 
 def run_ping(client: OpenAI) -> dict:
-    """Minimal JSON completion — fastest sanity check."""
+    """Minimal structured JSON — fastest sanity check."""
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "ok": {"type": "boolean"},
+            "model": {"type": "string"},
+        },
+        "required": ["ok", "model"],
+    }
     response = client.chat.completions.create(
         model=MODEL_ID,
         messages=[
-            {"role": "user", "content": 'Reply with JSON: {"ok": true, "model": "<your model id>"}'},
+            {
+                "role": "user",
+                "content": 'Reply with ok=true and model set to your model id.',
+            },
         ],
-        response_format={"type": "json_object"},
+        response_format=chat_response_format("ping", schema),
         temperature=0.0,
     )
     return json.loads(response.choices[0].message.content)
 
 
 def run_architect(client: OpenAI) -> dict:
-    """Same API shape as src/architect_book/app.py."""
+    """Structured Outputs shape for Architect (tiny 2-chapter outline)."""
+    schema = book_structure_schema(2, 2)
     response = client.chat.completions.create(
         model=MODEL_ID,
         messages=[
             {
                 "role": "system",
-                "content": "You are a book architect. Output valid JSON only.",
+                "content": "You are a book architect. Follow the JSON schema exactly.",
             },
             {
                 "role": "user",
                 "content": (
-                    'Return a tiny book outline JSON with keys "metadata" (title, subtitle) '
-                    'and "structure" (chapters: list of 2 items with title, description).'
+                    "Return a tiny book outline for focus Personality in English. "
+                    "Exactly 2 chapters. Each chapter needs distinct title, theme, and description. "
+                    "Fill all metadata and ui_labels strings; keep them short."
                 ),
             },
         ],
-        response_format={"type": "json_object"},
+        response_format=chat_response_format("book_structure", schema),
         temperature=0.3,
     )
     return json.loads(response.choices[0].message.content)
 
 
 def run_birth(client: OpenAI) -> dict:
-    """Same API shape as src/start_execution/app.py parse_birth_data_with_ai."""
+    """Structured Outputs shape for birth parse (start_execution)."""
     response = client.chat.completions.create(
         model=MODEL_ID,
         messages=[
@@ -79,11 +99,11 @@ def run_birth(client: OpenAI) -> dict:
                 "role": "user",
                 "content": (
                     'Parse birth data. USER PROMPT: "March 15, 1990 at 2:30 PM in Austin, Texas". '
-                    'Return JSON: "day", "month", "year", "hour", "min", "lat", "lon", "tzone".'
+                    "Return day, month, year, hour (0-23), min, lat, lon, tzone."
                 ),
             },
         ],
-        response_format={"type": "json_object"},
+        response_format=chat_response_format("birth_data", BIRTH_DATA_SCHEMA),
         temperature=0.0,
     )
     return json.loads(response.choices[0].message.content)
@@ -97,7 +117,7 @@ MODES = {
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=f"Smoke-test {MODEL_ID}")
+    parser = argparse.ArgumentParser(description=f"Smoke-test {MODEL_ID} structured outputs")
     parser.add_argument(
         "--mode",
         choices=MODES,
@@ -107,7 +127,7 @@ def main() -> None:
     args = parser.parse_args()
 
     client = OpenAI(api_key=_api_key())
-    print(f"Testing {MODEL_ID} (mode={args.mode})...")
+    print(f"Testing {MODEL_ID} structured outputs (mode={args.mode})...")
 
     try:
         result = MODES[args.mode](client)

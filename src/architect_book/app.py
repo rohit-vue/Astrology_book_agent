@@ -6,6 +6,9 @@ from botocore.config import Config
 from openai import OpenAI
 from urllib.parse import urlparse
 
+from structured_schemas import book_structure_schema, responses_text_format
+
+
 API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
 ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET")
 
@@ -225,7 +228,11 @@ def architect_book_structure(system_prompt: str, user_prompt: str) -> dict:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            text={"format": {"type": "json_object"}, "verbosity": TEXT_VERBOSITY_ARCHITECT},
+            text=responses_text_format(
+                "book_structure",
+                book_structure_schema(ARCHITECT_MIN_CHAPTERS, ARCHITECT_MAX_CHAPTERS),
+                verbosity=TEXT_VERBOSITY_ARCHITECT,
+            ),
             reasoning={"effort": REASONING_EFFORT_ARCHITECT},
             max_output_tokens=ARCHITECT_MAX_OUTPUT_TOKENS,
         )

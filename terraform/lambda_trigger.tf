@@ -58,8 +58,16 @@ resource "aws_iam_role_policy" "start_execution_permissions" {
 
 data "archive_file" "start_execution_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/../src/start_execution"
   output_path = "${path.module}/../dist/start_execution.zip"
+
+  source {
+    content  = file("${path.module}/../src/start_execution/app.py")
+    filename = "app.py"
+  }
+  source {
+    content  = file("${path.module}/../src/shared/structured_schemas.py")
+    filename = "structured_schemas.py"
+  }
 }
 
 resource "aws_lambda_function" "start_execution" {

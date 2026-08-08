@@ -6,7 +6,7 @@ see repo gpt-5.5-doc.txt). Images use Batch /v1/images/generations (gpt-image-2)
 
 Pipeline steps:
   1. Fetch astrology data (astrologyapi.com)
-  2. Architect book structure (OpenAI Responses API, GPT-5.5) with validation + retry
+  2. Architect book structure (OpenAI Responses API, GPT-5.5, json_schema) with validation + retry
   3a. Submit chapter + section text as one Batch job (/v1/responses)
   3b. Poll until batch completes, validate outputs, retry failures, collect results
   3c. Generate chapter images via Batch API (with validation + retry)
@@ -30,9 +30,12 @@ from dotenv import load_dotenv
 from openai import OpenAI, AsyncOpenAI
 
 sys.path.insert(0, "/app/generate_pdf")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from book_pdf_exporter import save_book_as_pdf
+from structured_schemas import book_structure_schema, responses_text_format
 
 load_dotenv("/app/.env")
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ASTRO_WESTERN_UID = os.environ["ASTROLOGY_WESTERN_USER_ID"]
@@ -54,7 +57,7 @@ REASONING_EFFORT_ARCHITECT = "high"
 TEXT_VERBOSITY_ARCHITECT = "high"
 ARCHITECT_MAX_OUTPUT_TOKENS = 24000
 ARCHITECT_MIN_CHAPTERS = 5
-ARCHITECT_MAX_CHAPTERS = 10
+ARCHITECT_MAX_CHAPTERS = 7
 ARCHITECT_MAX_RETRIES = 2
 
 # Style profile (structured JSON — keep reasoning moderate, text less verbose)
@@ -150,6 +153,13 @@ Your entire response MUST be a single, valid JSON object.
 __ASTROLOGY_DATA__"""
 
 IMAGE_PROMPT_TEMPLATE = "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
+
+# Same template as terraform SSM /AstrologyBookFactory/prompts/writer/style_analysis
+STYLE_PROMPT_TEMPLATE = (
+    "Analyze the following astrological data. Based on its core energies, describe the ideal "
+    "writing tone and style for a personal book about '__FOCUS__' in **__LANGUAGE__**. "
+    "Keep it concise.\n\nDATA:\n__ASTROLOGY_DATA__"
+)
 
 METADATA_KEYS = (
     "title",
@@ -366,15 +376,39 @@ def _response_is_incomplete(resp) -> bool:
     return False
 
 
-def default_style(focus: str, language: str) -> str:
-    return (
-        f"Language: {language}. "
-        f"Focus: {focus}. "
-        "Tone: Warm, psychologically precise, compassionate, direct second-person. "
-        "Voice rules: concrete language; grounded interpretation; practical guidance; "
-        "emotionally honest pacing; no fluff. "
-        "Avoid: generic filler; moralizing; vague advice; melodrama."
+def render_style_analysis_prompt(template: str, focus: str, language: str, astrology_data: dict) -> str:
+    """Match src/write_chapters/app.py render_style_analysis_prompt."""
+    replacements = {
+        "__FOCUS__": focus,
+        "__LANGUAGE__": language,
+        "__ASTROLOGY_DATA__": json.dumps(astrology_data, ensure_ascii=False),
+    }
+    rendered = template
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    return rendered
+
+
+async def generate_writing_style(async_client: AsyncOpenAI, chart: dict, focus: str, language: str) -> str:
+    """Match prod: GPT style profile from style_analysis prompt + full chart (no default_style)."""
+    prompt = render_style_analysis_prompt(STYLE_PROMPT_TEMPLATE, focus, language, chart)
+    print("  Generating writing style profile (Responses API)...")
+    style_resp = await async_client.responses.create(
+        model=MODEL_CONTENT,
+        input=[{"role": "user", "content": prompt}],
+        text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_STYLE},
+        reasoning={"effort": REASONING_EFFORT_STYLE},
+        max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
     )
+    if _response_is_incomplete(style_resp):
+        raise ValueError(
+            f"style analysis response incomplete: {getattr(style_resp, 'incomplete_details', None)}"
+        )
+    style = _response_text_from_obj(style_resp).strip()
+    if not style:
+        raise ValueError("empty style analysis response")
+    print(f"  Generated writing style profile ({len(style)} chars)")
+    return style
 
 
 def _section_batch_prompt(name, description, style, language):
@@ -567,16 +601,18 @@ def architect_book(astrology_data, focus, language):
 
     for attempt in range(1, max_attempts + 1):
         print(f"  Calling OpenAI Responses API (attempt {attempt}/{max_attempts})...")
+        schema = book_structure_schema(ARCHITECT_MIN_CHAPTERS, ARCHITECT_MAX_CHAPTERS)
         resp = client.responses.create(
             model=MODEL_CONTENT,
             input=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            text={
-                "format": {"type": "json_object"},
-                "verbosity": TEXT_VERBOSITY_ARCHITECT,
-            },
+            text=responses_text_format(
+                "book_structure",
+                schema,
+                verbosity=TEXT_VERBOSITY_ARCHITECT,
+            ),
             reasoning={"effort": REASONING_EFFORT_ARCHITECT},
             max_output_tokens=ARCHITECT_MAX_OUTPUT_TOKENS,
         )
@@ -1168,8 +1204,12 @@ async def write_chapters(astrology_data, structure, focus, language):
     async_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
     sync_client = OpenAI(api_key=OPENAI_API_KEY)
 
-    style = default_style(focus, language)
-    print(f"  Style: {style[:80]}...")
+    style = await generate_writing_style(async_client, astrology_data, focus, language)
+    print(f"  Style: {style[:120]}...")
+    style_path = os.path.join(ARTIFACTS_DIR, "writing_style.txt")
+    with open(style_path, "w", encoding="utf-8") as f:
+        f.write(style)
+    print(f"  Saved -> {style_path}")
 
     struct_inner = structure.get("structure", {})
 

@@ -7,7 +7,10 @@ from urllib.parse import urlparse
 from botocore.exceptions import ClientError
 from openai import OpenAI
 
+from structured_schemas import BIRTH_DATA_SCHEMA, chat_response_format
+
 # Initialize the Step Functions client
+
 sfn_client = boto3.client('stepfunctions')
 sqs_client = boto3.client('sqs')
 s3_client = boto3.client('s3')
@@ -64,7 +67,7 @@ def parse_birth_data_with_ai(date_time_str, location_str):
     response = openai_client.chat.completions.create(
         model="gpt-5.4-mini-2026-03-17",
         messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
+        response_format=chat_response_format("birth_data", BIRTH_DATA_SCHEMA),
         temperature=0.0
     )
     return json.loads(response.choices[0].message.content)

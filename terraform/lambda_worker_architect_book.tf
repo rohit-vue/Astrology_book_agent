@@ -26,8 +26,16 @@ resource "aws_iam_role_policy" "architect_book_permissions" {
 
 data "archive_file" "architect_book_code" {
   type        = "zip"
-  source_file = "${path.module}/../src/architect_book/app.py"
   output_path = "${path.module}/../dist/architect_book_code.zip"
+
+  source {
+    content  = file("${path.module}/../src/architect_book/app.py")
+    filename = "app.py"
+  }
+  source {
+    content  = file("${path.module}/../src/shared/structured_schemas.py")
+    filename = "structured_schemas.py"
+  }
 }
 
 resource "aws_lambda_function" "architect_book" {

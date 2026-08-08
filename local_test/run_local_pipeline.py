@@ -25,9 +25,12 @@ from dotenv import load_dotenv
 from openai import OpenAI, AsyncOpenAI  # pyright: ignore[reportMissingImports]
 
 sys.path.insert(0, "/app/generate_pdf")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from book_pdf_exporter import save_book_as_pdf # pyright: ignore[reportMissingImports]
+from structured_schemas import book_structure_schema, chat_response_format
 
 load_dotenv("/app/.env")
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ASTRO_WESTERN_UID = os.environ["ASTROLOGY_WESTERN_USER_ID"]
@@ -109,6 +112,13 @@ __ASTROLOGY_DATA__"""
 
 IMAGE_PROMPT_TEMPLATE = "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
 
+# Same template as terraform SSM /AstrologyBookFactory/prompts/writer/style_analysis
+STYLE_PROMPT_TEMPLATE = (
+    "Analyze the following astrological data. Based on its core energies, describe the ideal "
+    "writing tone and style for a personal book about '__FOCUS__' in **__LANGUAGE__**. "
+    "Keep it concise.\n\nDATA:\n__ASTROLOGY_DATA__"
+)
+
 
 # ===========================================================================
 # STEP 1: Fetch Astrology Data
@@ -186,14 +196,16 @@ def architect_book(astrology_data, focus, language):
     )
 
     client = OpenAI(api_key=OPENAI_API_KEY)
-    print("  Calling OpenAI to architect book structure...")
+    print("  Calling OpenAI to architect book structure (json_schema)...")
+    # Non-batch local script still uses fixed 7 chapters in its prompt.
+    schema = book_structure_schema(7, 7)
     resp = client.chat.completions.create(
         model=MODEL_TEXT,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        response_format={"type": "json_object"},
+        response_format=chat_response_format("book_structure", schema),
         temperature=0.3,
     )
 
@@ -336,19 +348,30 @@ async def write_chapters(astrology_data, structure, focus, language):
 
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-    # Style analysis
+    # Style analysis (same prompt shape as prod generate_writing_style)
+    style_prompt = (
+        STYLE_PROMPT_TEMPLATE
+        .replace("__FOCUS__", focus)
+        .replace("__LANGUAGE__", language)
+        .replace("__ASTROLOGY_DATA__", json.dumps(astrology_data, ensure_ascii=False))
+    )
+    print("  Generating writing style profile...")
     try:
         style_resp = await client.chat.completions.create(
             model=MODEL_TEXT,
-            messages=[{"role": "user", "content": f"Describe the ideal writing tone for a book about {focus} in {language} based on this chart."}],
-            max_completion_tokens=100,
+            messages=[{"role": "user", "content": style_prompt}],
+            max_completion_tokens=600,
         )
-        style = style_resp.choices[0].message.content.strip()
+        style = (style_resp.choices[0].message.content or "").strip()
         if not style:
             raise ValueError("empty style analysis response")
     except Exception as e:
         raise RuntimeError(f"Style generation failed; refusing default_style fallback: {e}") from e
-    print(f"  Style: {style[:80]}...")
+    print(f"  Style: {style[:120]}...")
+    style_path = os.path.join(ARTIFACTS_DIR, "writing_style.txt")
+    with open(style_path, "w", encoding="utf-8") as f:
+        f.write(style)
+    print(f"  Saved -> {style_path}")
 
     # Resolve descriptions from structure
     struct_inner = structure.get("structure", {})
