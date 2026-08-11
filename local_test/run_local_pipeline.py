@@ -14,6 +14,7 @@ Usage:
 import sys
 import os
 import json
+import re
 import asyncio
 import time
 from datetime import datetime
@@ -31,6 +32,31 @@ from structured_schemas import book_structure_schema, chat_response_format
 
 load_dotenv("/app/.env")
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+_CHAPTER_NUM_HEADER_RE = re.compile(
+    r"^\s*Chapter\s+\d+\s*:\s*[^\n]+(?:\n+|$)",
+    re.IGNORECASE,
+)
+
+
+def _strip_echoed_chapter_header(text: str, chapter_title: str | None = None) -> str:
+    """Remove a leading 'Chapter N: …' (or bare title) echo from model output."""
+    cleaned = str(text or "")
+    if not cleaned.strip():
+        return cleaned
+
+    cleaned, n = _CHAPTER_NUM_HEADER_RE.subn("", cleaned, count=1)
+    if n:
+        cleaned = cleaned.lstrip("\n\r ")
+
+    title = str(chapter_title or "").strip()
+    if title:
+        parts = cleaned.split("\n", 1)
+        first = parts[0].strip().strip("*#_ ").strip("\"'")
+        if first.casefold() == title.casefold():
+            cleaned = (parts[1] if len(parts) > 1 else "").lstrip("\n\r ")
+
+    return cleaned
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ASTRO_WESTERN_UID = os.environ["ASTROLOGY_WESTERN_USER_ID"]
@@ -283,6 +309,7 @@ async def write_single_chapter(client, idx, details, chart, target, focus, style
     **Summary:** {description}
     **Word Target:** {target}
     **Formatting:** Plain paragraphs. No bold. No headers.
+    **Output Rule:** Return only final chapter prose. Do not begin with "Chapter {idx}:" or the chapter title. Start directly with body prose.
     **Data:** {json.dumps(chart)}
     """
     text_resp = await client.chat.completions.create(
@@ -290,7 +317,10 @@ async def write_single_chapter(client, idx, details, chart, target, focus, style
         messages=[{"role": "user", "content": prompt}],
         temperature=0.5,
     )
-    text = text_resp.choices[0].message.content.strip()
+    text = _strip_echoed_chapter_header(
+        (text_resp.choices[0].message.content or "").strip(),
+        title,
+    )
 
     img_path = None
     try:

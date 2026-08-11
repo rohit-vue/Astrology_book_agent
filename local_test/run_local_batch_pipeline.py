@@ -241,6 +241,32 @@ def _batch_body_is_incomplete(body: dict) -> bool:
     return bool(body.get("incomplete_details"))
 
 
+_CHAPTER_NUM_HEADER_RE = re.compile(
+    r"^\s*Chapter\s+\d+\s*:\s*[^\n]+(?:\n+|$)",
+    re.IGNORECASE,
+)
+
+
+def _strip_echoed_chapter_header(text: str, chapter_title: str | None = None) -> str:
+    """Remove a leading 'Chapter N: …' (or bare title) echo from model output."""
+    cleaned = str(text or "")
+    if not cleaned.strip():
+        return cleaned
+
+    cleaned, n = _CHAPTER_NUM_HEADER_RE.subn("", cleaned, count=1)
+    if n:
+        cleaned = cleaned.lstrip("\n\r ")
+
+    title = str(chapter_title or "").strip()
+    if title:
+        parts = cleaned.split("\n", 1)
+        first = parts[0].strip().strip("*#_ ").strip("\"'")
+        if first.casefold() == title.casefold():
+            cleaned = (parts[1] if len(parts) > 1 else "").lstrip("\n\r ")
+
+    return cleaned
+
+
 def _validate_chapter_text(text) -> tuple[bool, str]:
     if not text or not str(text).strip():
         return False, "empty text"
@@ -711,7 +737,9 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"- Use **double newlines (blank line)** ONLY between **major sections** (e.g. opening, each big thematic turn, closing). "
             f"**At most 8–10 double-newlines in the whole chapter.** Never put a double-newline after every sentence or quoted line.\n"
             f"- For examples or quoted phrases, weave them into prose or use **one** short block; do not stack many one-line blocks separated by blank lines.\n"
-            f"**Output Rule:** Return only final chapter prose.\n"
+            f"**Output Rule:** Return only final chapter prose. "
+            f"Do not begin with \"Chapter {chapter_num}:\" or the chapter title. "
+            f"Start directly with body prose; first characters must be narrative text, never a heading.\n"
             f"**Data:** {json.dumps(astrology_data)}"
         )
 
@@ -915,6 +943,13 @@ def collect_chapter_batch_results(client, batch, manifest, artifact_prefix="chap
                 chapter_text = (body["choices"][0]["message"]["content"] or "").strip()
             except (KeyError, IndexError, TypeError):
                 chapter_text = ""
+
+        meta = manifest.get(custom_id) or {}
+        chapter_title = meta.get("chapter_title")
+        before_len = len(chapter_text)
+        chapter_text = _strip_echoed_chapter_header(chapter_text, chapter_title)
+        if len(chapter_text) < before_len:
+            print("    Stripped echoed chapter header from model output")
 
         print(f"    Text length:     {len(chapter_text):,} chars")
 

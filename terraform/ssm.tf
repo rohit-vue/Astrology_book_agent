@@ -100,7 +100,7 @@ Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 - Longer paragraphs are fine when the idea needs room; neighbor paragraphs may be much shorter so the page does not look like uniform blocks.
 - Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.
 - Use **double newlines (blank line)** ONLY between **major sections**. **At most 8–10 double-newlines in the whole chapter.**
-**Output Rule:** Return only final chapter prose.
+**Output Rule:** Return only final chapter prose. Do not begin with "Chapter __CHAPTER_NUM__:" or the chapter title. Start directly with body prose; first characters must be narrative text, never a heading.
 **Data:** __ASTROLOGY_DATA__
   EOT
 }

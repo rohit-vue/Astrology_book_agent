@@ -375,6 +375,32 @@ def _batch_body_is_incomplete(body: dict) -> bool:
     return bool(body.get("incomplete_details"))
 
 
+_CHAPTER_NUM_HEADER_RE = re.compile(
+    r"^\s*Chapter\s+\d+\s*:\s*[^\n]+(?:\n+|$)",
+    re.IGNORECASE,
+)
+
+
+def _strip_echoed_chapter_header(text: str, chapter_title: str | None = None) -> str:
+    """Remove a leading 'Chapter N: …' (or bare title) echo from model output."""
+    cleaned = str(text or "")
+    if not cleaned.strip():
+        return cleaned
+
+    cleaned, n = _CHAPTER_NUM_HEADER_RE.subn("", cleaned, count=1)
+    if n:
+        cleaned = cleaned.lstrip("\n\r ")
+
+    title = str(chapter_title or "").strip()
+    if title:
+        parts = cleaned.split("\n", 1)
+        first = parts[0].strip().strip("*#_ ").strip("\"'")
+        if first.casefold() == title.casefold():
+            cleaned = (parts[1] if len(parts) > 1 else "").lstrip("\n\r ")
+
+    return cleaned
+
+
 def _validate_chapter_text(text) -> tuple[bool, str]:
     if not text or not str(text).strip():
         return False, "empty text"
@@ -418,6 +444,12 @@ def filter_valid_text_results(
     for custom_id in list(merged.keys()):
         text = merged.get(custom_id)
         if custom_id in chapter_manifest:
+            title = (chapter_manifest.get(custom_id) or {}).get("chapter_title")
+            before_len = len(text or "")
+            text = _strip_echoed_chapter_header(text, title)
+            if len(text or "") < before_len:
+                print(f"Stripped echoed chapter header from {custom_id}")
+            merged[custom_id] = text
             ok, reason = _validate_chapter_text(text)
             label = custom_id
         elif custom_id in section_manifest:
@@ -864,6 +896,7 @@ def build_chapters_data_from_results(results_by_id, manifest, order_id, line_ite
         if text is None:
             continue
 
+        text = _strip_echoed_chapter_header(text, title)
         key = f"chapters-json/{order_id}/{line_item_id}/chapter_{idx}.json"
         s3_put_json(ARTIFACTS_BUCKET, key, {"chapter_title": title, "chapter_text": text})
         chapters_data.append(
