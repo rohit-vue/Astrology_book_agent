@@ -79,7 +79,9 @@ def run_architect(client: OpenAI) -> dict:
                 "role": "user",
                 "content": (
                     "Return a tiny book outline for focus Personality in English. "
-                    "Exactly 2 chapters. Each chapter needs distinct title, theme, and description. "
+                    "Exactly 2 chapters. Each chapter needs distinct title, theme, "
+                    "description, and chapter_input_material_used.chapter_focus (chart cues). "
+                    "Chapter titles max 70 characters. "
                     "Fill all metadata and ui_labels strings; keep them short."
                 ),
             },

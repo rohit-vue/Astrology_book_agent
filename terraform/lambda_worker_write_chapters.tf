@@ -26,8 +26,16 @@ resource "aws_iam_role_policy" "write_chapters_permissions" {
 
 data "archive_file" "write_chapters_code" {
   type        = "zip"
-  source_file = "${path.module}/../src/write_chapters/app.py"
   output_path = "${path.module}/../dist/write_chapters_code.zip"
+
+  source {
+    content  = file("${path.module}/../src/write_chapters/app.py")
+    filename = "app.py"
+  }
+  source {
+    content  = file("${path.module}/../src/shared/structured_schemas.py")
+    filename = "structured_schemas.py"
+  }
 }
 
 resource "aws_lambda_function" "write_chapters" {
@@ -62,8 +70,8 @@ resource "aws_lambda_function" "write_chapters" {
       REASONING_EFFORT_ARCHITECT      = "high"
       TEXT_VERBOSITY_ARCHITECT        = "high"
       REASONING_EFFORT_STYLE          = "medium"
-      TEXT_VERBOSITY_STYLE            = "medium"
-      STYLE_MAX_OUTPUT_TOKENS         = "1000"
+      TEXT_VERBOSITY_STYLE            = "low"
+      STYLE_MAX_OUTPUT_TOKENS         = "2500"
       SECTION_MAX_OUTPUT_TOKENS       = "2000"
       SECTION_WORD_TARGET             = "550"
       SECTION_WORD_MIN                = "450"

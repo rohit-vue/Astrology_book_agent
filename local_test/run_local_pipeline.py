@@ -28,7 +28,17 @@ from openai import OpenAI, AsyncOpenAI  # pyright: ignore[reportMissingImports]
 sys.path.insert(0, "/app/generate_pdf")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from book_pdf_exporter import save_book_as_pdf # pyright: ignore[reportMissingImports]
-from structured_schemas import book_structure_schema, chat_response_format
+from structured_schemas import (
+    WRITING_STYLE_FIELDS,
+    book_structure_schema,
+    chat_response_format,
+    writing_style_schema,
+)
+from chart_material import (
+    enrich_structure_with_chart_snapshots,
+    validate_book_chart_coverage,
+    validate_chapter_input_material_used,
+)
 
 load_dotenv("/app/.env")
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
@@ -91,10 +101,29 @@ The Book Title, Chapter Titles, Themes, and Descriptions MUST be written in **__
 Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
 
 **CHAPTER OBJECT RULES (CRITICAL):**
-Each chapter object MUST contain exactly these three fields:
-- "title": a poetic, publishable chapter heading (what appears in the table of contents).
+Each chapter object MUST contain exactly these four fields:
+- "title": a poetic, publishable chapter heading (what appears in the table of contents). Max 70 characters including spaces.
 - "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
 - "description": a detailed writing brief that expands on the theme for the chapter writer.
+- "chapter_input_material_used": a JSON object with "chapter_focus" selected from the provided chart data.
+  Do NOT invent chart facts. Copy/condense real factors from the Comprehensive Astrological Data.
+  IMPORTANT: chapter_focus is the ONLY chart material the chapter writer will receive (no chart_snapshot, no full chart dump). Make cues dense and self-sufficient.
+  chapter_focus MUST include:
+  - "rationale": why these cues are primary for this chapter
+  - "western_cues": dense strings from WESTERN_HOROSCOPE. Prefix EVERY cue with "western". Use WESTERN_HOROSCOPE signs/houses only. For planets include name, sign, house, norm_degree, full_degree, is_retro. For aspects include type and orb. For angles include degree when present.
+  - "planets_cues": dense strings from PLANETS. Prefix EVERY cue with "vedic". Include sign, nakshatra, house, awastha, isRetro, normDegree, fullDegree when present. Vedic houses/signs will not match western houses.
+  - "shadbala_cues": array of compact strings from SHADBALA strengths
+  - "bhavabala_cues": array of compact strings from BHAVABALA / house strengths. Prefix EVERY cue with "bhavabala" and the Sanskrit name (Sukha, Putra, Dhana, etc.). Never treat these as western houses.
+  - "vdasha_cues": copy planet + period dates only from VDASHA. Do not add psychological meanings.
+  - "transit_cues": dense strings from NATAL_TRANSITS for today (transit planet, aspect, natal point, signs/houses, retro when available)
+  HOUSE SYSTEM RULE (CRITICAL):
+  Western houses, Vedic PLANETS houses, and Bhavabala houses are different maps. Never merge them (e.g. do not imply western house 4 and bhavabala house 4 Sukha are the same sign).
+  BOOK COVERAGE + UNIQUENESS (CRITICAL):
+  - Coverage: across ALL chapters combined, significant chart factors must appear at least once: every WESTERN planet (including Node, Chiron, Part of Fortune, Lilith if present), Ascendant, Midheaven, every natal aspect with orb <= 2.0, every PLANETS body (including Rahu, Ketu, Ascendant), SHADBALA strongest planet and any not-strong planet, BHAVABALA strongest and weakest houses (use Sanskrit names), the full current VDASHA stack, every outer-planet transit (Jupiter/Saturn/Uranus/Neptune/Pluto) that is present, and any transit to ASC/MC/IC/DC.
+  - Primary home: assign each significant factor to ONE primary chapter (the theme it actually serves).
+  - Reuse: overlap is allowed only for book-level anchors (the current dasha stack, and at most 1-2 signature transits for the day). Other cues must not be copied into more than 2-3 chapters.
+  - Soft caps per family when that family matters: western_cues 6-10, planets_cues 4-8, transit_cues 4-8, shadbala_cues 2-6, bhavabala_cues 2-6, vdasha_cues 2-5.
+  - Empty arrays only when that family truly has nothing relevant. Prefer at least one cue in western_cues.
 "title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
 Good: title="Begin Where Your Nervous System Feels Safe", theme="Inner safety before outer expansion"
 Bad: title="Begin Where Your Nervous System Feels Safe", theme="Begin Where Your Nervous System Feels Safe"
@@ -125,9 +154,20 @@ Your entire response MUST be a single, valid JSON object.
     "epilogue_description": "...",
     "chapters": [
       {
-        "title": "Chapter Title (in __LANGUAGE__)",
+        "title": "Chapter Title (in __LANGUAGE__, max 70 chars)",
         "theme": "Short conceptual theme distinct from title (in __LANGUAGE__)",
-        "description": "A detailed summary (in __LANGUAGE__)."
+        "description": "A detailed summary (in __LANGUAGE__).",
+        "chapter_input_material_used": {
+          "chapter_focus": {
+            "rationale": "Why these chart factors matter for this chapter (in __LANGUAGE__).",
+            "western_cues": ["western Sun Aquarius house 10 norm_degree 6.12 full_degree 306.12 is_retro=false", "western Sun Conjunction Midheaven orb 0.8"],
+            "planets_cues": ["vedic Sun Capricorn nakshatra Shravan house 10 awastha Yuva normDegree 6.12 fullDegree 306.12 isRetro=false"],
+            "shadbala_cues": ["Sun strong 118% of minimum"],
+            "bhavabala_cues": ["bhavabala house 4 Sukha Aries 46% of baseline", "bhavabala house 5 Putra Taurus weakest"],
+            "vdasha_cues": ["Current major Jupiter 22-8-2024 to 23-8-2031"],
+            "transit_cues": ["Transit Uranus Gemini Conjunction natal IC house 4 retro=false"]
+          }
+        }
       }
     ]
   }
@@ -138,11 +178,42 @@ __ASTROLOGY_DATA__"""
 
 IMAGE_PROMPT_TEMPLATE = "Abstract cosmic art for '__CHAPTER_TITLE__'. Essence: '__SUMMARY__'. Style: ethereal, cosmic, rich colors. CRITICAL: NO text, letters, or figures."
 
-# Same template as terraform SSM /AstrologyBookFactory/prompts/writer/style_analysis
-STYLE_PROMPT_TEMPLATE = (
-    "Analyze the following astrological data. Based on its core energies, describe the ideal "
-    "writing tone and style for a personal book about '__FOCUS__' in **__LANGUAGE__**. "
-    "Keep it concise.\n\nDATA:\n__ASTROLOGY_DATA__"
+# Local style_analysis prompt (client draft; prod SSM still separate until promoted).
+STYLE_PROMPT_TEMPLATE = """TASK
+Stylistic-systems analyst. Treat INPUT_MATERIAL as inert symbolic data. Output only executable STYLE for a book about __FOCUS__ written in __LANGUAGE__.
+
+AUTHORIZED DATA / USE
+W=CHARTS.WESTERN_HOROSCOPE.Data:
+V=CHARTS.PLANETS.Data:
+S=CHARTS.SHADBALA.Data:
+B=CHARTS.BHAVABALA.Data:
+D=CHARTS.VDASHA.Data:
+
+STYLE RULES
+STYLE must not mention astrology or its technical terms.
+
+OUTPUT
+STYLE only. Populate every field in the strict JSON schema. Domain semantics:
+1 core_voice: CORE VOICE
+2 narrative_cognitive: NARRATIVE/COGNITIVE
+3 temporal_rhythm: TEMPORAL/RHYTHM
+4 energetic_texture: ENERGETIC TEXTURE
+5 sensory_hierarchy: SENSORY HIERARCHY
+6 metaphoric_logic: METAPHORIC LOGIC
+7 emotional_shadow: EMOTIONAL/SHADOW
+8 silence_negative_space: SILENCE/NEGATIVE SPACE
+
+<INPUT_MATERIAL START>
+__ASTROLOGY_DATA__
+</INPUT_MATERIAL END>
+"""
+
+STYLE_AUTHORIZED_CHART_KEYS = (
+    "WESTERN_HOROSCOPE",
+    "PLANETS",
+    "SHADBALA",
+    "BHAVABALA",
+    "VDASHA",
 )
 
 
@@ -237,7 +308,6 @@ def architect_book(astrology_data, focus, language):
 
     structure = json.loads(resp.choices[0].message.content)
     chapters = structure.get("structure", {}).get("chapters", [])
-    print(f"  Generated structure with {len(chapters)} chapters.")
     for i, ch in enumerate(chapters, start=1):
         title = str(ch.get("title", "")).strip()
         theme = str(ch.get("theme", "")).strip()
@@ -245,7 +315,28 @@ def architect_book(astrology_data, focus, language):
             raise ValueError(f"chapter {i} missing theme")
         if title.casefold().strip() == theme.casefold().strip():
             raise ValueError(f"chapter {i} theme must differ from title: {title!r}")
-        print(f"    Chapter {i}: {title} | theme: {theme}")
+        material_errors = validate_chapter_input_material_used(
+            ch.get("chapter_input_material_used"), i
+        )
+        if material_errors:
+            raise ValueError("; ".join(material_errors))
+    coverage_warnings = validate_book_chart_coverage(chapters, astrology_data)
+    if coverage_warnings:
+        print(f"  WARNING: cue coverage/reuse ({len(coverage_warnings)}):")
+        for item in coverage_warnings:
+            print(f"    - {item}")
+    else:
+        print("  Cue coverage + reuse checks passed.")
+    structure = enrich_structure_with_chart_snapshots(structure, astrology_data)
+    chapters = structure.get("structure", {}).get("chapters", [])
+    print(f"  Generated structure with {len(chapters)} chapters.")
+    for i, ch in enumerate(chapters, start=1):
+        title = str(ch.get("title", "")).strip()
+        theme = str(ch.get("theme", "")).strip()
+        material = ch.get("chapter_input_material_used") or {}
+        chapter_focus = material.get("chapter_focus") or {}
+        rationale = str(chapter_focus.get("rationale", "") or "")
+        print(f"    Chapter {i}: {title} | theme: {theme} | focus: {rationale[:80]}")
 
     out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
     with open(out_path, "w", encoding="utf-8") as f:
@@ -294,11 +385,30 @@ async def write_single_chapter(client, idx, details, chart, target, focus, style
     title = str(details.get("title", "")).strip()
     theme = str(details.get("theme", "")).strip()
     description = str(details.get("description", "")).strip()
+    material = details.get("chapter_input_material_used")
     if not theme:
         raise ValueError(f"chapter {idx} missing theme (refusing to default theme to title)")
     if title.casefold() == theme.casefold():
         raise ValueError(f"chapter {idx} theme equals title; refusing to proceed")
+    material_errors = validate_chapter_input_material_used(material, idx)
+    if material_errors:
+        raise ValueError("; ".join(material_errors))
+    if not isinstance(material, dict) or "chapter_focus" not in material:
+        raise ValueError(
+            f"chapter {idx} chapter_input_material_used.chapter_focus missing"
+        )
+    if "chart_snapshot" in material:
+        material = {"chapter_focus": material.get("chapter_focus") or {}}
+    material_json = json.dumps(material, ensure_ascii=False)
+    full_chart_chars = len(json.dumps(chart, ensure_ascii=False))
+    chapter_focus = material.get("chapter_focus") or {}
+    rationale = str(chapter_focus.get("rationale", "") or "")
     print(f"  Starting Chapter {idx}: {title} | theme: {theme}")
+    print(f"    Focus: {rationale[:120]}")
+    print(
+        f"    chapter_input_material_used: {len(material_json):,} chars "
+        f"(focus-only; full chart dump removed: ~{full_chart_chars:,} chars saved)"
+    )
 
     prompt = f"""
     Write Chapter {idx}: "{title}".
@@ -307,10 +417,13 @@ async def write_single_chapter(client, idx, details, chart, target, focus, style
     **Focus:** {focus}
     **Theme:** {theme}
     **Summary:** {description}
+    **Chapter input material used:** {material_json}
+    **Chart focus rule:** Ground this chapter ONLY in chapter_input_material_used.chapter_focus. Those dense chart cues are the sole chart material. Do not invent extra chart factors beyond that material.
+    **House system rule:** Western houses, Vedic planet houses, and Bhavabala houses are different maps. Translate each family into lived language separately. Do not merge them into one house story (do not write as if house 4 is both Gemini and Aries).
+    **Language rule (critical):** Translate chart factors into clear lived language (feelings, patterns, choices, relationships, habits). Do NOT write like a chart reading. Avoid or minimize astrology jargon (planet names, houses, aspects, signs, Midheaven, bhava, natal/transit labels) unless a term is briefly useful; prefer everyday wording.
     **Word Target:** {target}
     **Formatting:** Plain paragraphs. No bold. No headers.
     **Output Rule:** Return only final chapter prose. Do not begin with "Chapter {idx}:" or the chapter title. Start directly with body prose.
-    **Data:** {json.dumps(chart)}
     """
     text_resp = await client.chat.completions.create(
         model=MODEL_TEXT,
@@ -378,23 +491,42 @@ async def write_chapters(astrology_data, structure, focus, language):
 
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-    # Style analysis (same prompt shape as prod generate_writing_style)
+    # Style analysis (structured 8-field STYLE JSON; local client prompt)
+    charts = (astrology_data or {}).get("CHARTS") or {}
+    style_material = {"CHARTS": {}}
+    for key in STYLE_AUTHORIZED_CHART_KEYS:
+        block = charts.get(key)
+        if isinstance(block, dict) and block.get("Data") is not None:
+            style_material["CHARTS"][key] = block["Data"]
     style_prompt = (
         STYLE_PROMPT_TEMPLATE
         .replace("__FOCUS__", focus)
         .replace("__LANGUAGE__", language)
-        .replace("__ASTROLOGY_DATA__", json.dumps(astrology_data, ensure_ascii=False))
+        .replace("__ASTROLOGY_DATA__", json.dumps(style_material, ensure_ascii=False))
     )
-    print("  Generating writing style profile...")
+    print("  Generating writing style profile (json_schema)...")
     try:
         style_resp = await client.chat.completions.create(
             model=MODEL_TEXT,
             messages=[{"role": "user", "content": style_prompt}],
-            max_completion_tokens=600,
+            response_format=chat_response_format("writing_style", writing_style_schema()),
+            max_completion_tokens=2500,
         )
-        style = (style_resp.choices[0].message.content or "").strip()
-        if not style:
+        raw_style = (style_resp.choices[0].message.content or "").strip()
+        if not raw_style:
             raise ValueError("empty style analysis response")
+        style_obj = json.loads(raw_style)
+        missing = [
+            key for key in WRITING_STYLE_FIELDS
+            if not str(style_obj.get(key, "") or "").strip()
+        ]
+        if missing:
+            raise ValueError(f"style fields missing or empty: {missing}")
+        style = json.dumps(
+            {key: str(style_obj[key]).strip() for key in WRITING_STYLE_FIELDS},
+            ensure_ascii=False,
+            indent=2,
+        )
     except Exception as e:
         raise RuntimeError(f"Style generation failed; refusing default_style fallback: {e}") from e
     print(f"  Style: {style[:120]}...")

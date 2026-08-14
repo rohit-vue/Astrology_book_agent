@@ -28,10 +28,29 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
     - Prefer Maximum 10-11 words total for the book title.
 
     **CHAPTER OBJECT RULES (CRITICAL):**
-    Each chapter object MUST contain exactly these three fields:
-    - "title": a poetic, publishable chapter heading (what appears in the table of contents).
+    Each chapter object MUST contain exactly these four fields:
+    - "title": a poetic, publishable chapter heading (what appears in the table of contents). Max 70 characters including spaces.
     - "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
     - "description": a detailed writing brief that expands on the theme for the chapter writer.
+    - "chapter_input_material_used": a JSON object with "chapter_focus" selected from the provided chart data.
+      Do NOT invent chart facts. Copy/condense real factors from the Comprehensive Astrological Data.
+      IMPORTANT: chapter_focus is the ONLY chart material the chapter writer will receive (no chart_snapshot, no full chart dump). Make cues dense and self-sufficient.
+      chapter_focus MUST include:
+      - "rationale": why these cues are primary for this chapter
+      - "western_cues": dense strings from WESTERN_HOROSCOPE. Prefix EVERY cue with "western". Use WESTERN_HOROSCOPE signs/houses only. For planets include name, sign, house, norm_degree, full_degree, is_retro. For aspects include type and orb. For angles include degree when present.
+      - "planets_cues": dense strings from PLANETS. Prefix EVERY cue with "vedic". Include sign, nakshatra, house, awastha, isRetro, normDegree, fullDegree when present. Vedic houses/signs will not match western houses.
+      - "shadbala_cues": array of compact strings from SHADBALA strengths
+      - "bhavabala_cues": array of compact strings from BHAVABALA / house strengths. Prefix EVERY cue with "bhavabala" and the Sanskrit name (Sukha, Putra, Dhana, etc.). Never treat these as western houses.
+      - "vdasha_cues": copy planet + period dates only from VDASHA. Do not add psychological meanings.
+      - "transit_cues": dense strings from NATAL_TRANSITS for today (transit planet, aspect, natal point, signs/houses, retro when available)
+      HOUSE SYSTEM RULE (CRITICAL):
+      Western houses, Vedic PLANETS houses, and Bhavabala houses are different maps. Never merge them (e.g. do not imply western house 4 and bhavabala house 4 Sukha are the same sign).
+      BOOK COVERAGE + UNIQUENESS (CRITICAL):
+      - Coverage: across ALL chapters combined, significant chart factors must appear at least once: every WESTERN planet (including Node, Chiron, Part of Fortune, Lilith if present), Ascendant, Midheaven, every natal aspect with orb <= 2.0, every PLANETS body (including Rahu, Ketu, Ascendant), SHADBALA strongest planet and any not-strong planet, BHAVABALA strongest and weakest houses (use Sanskrit names), the full current VDASHA stack, every outer-planet transit (Jupiter/Saturn/Uranus/Neptune/Pluto) that is present, and any transit to ASC/MC/IC/DC.
+      - Primary home: assign each significant factor to ONE primary chapter (the theme it actually serves).
+      - Reuse: overlap is allowed only for book-level anchors (the current dasha stack, and at most 1-2 signature transits for the day). Other cues must not be copied into more than 2-3 chapters.
+      - Soft caps per family when that family matters: western_cues 6-10, planets_cues 4-8, transit_cues 4-8, shadbala_cues 2-6, bhavabala_cues 2-6, vdasha_cues 2-5.
+      - Empty arrays only when that family truly has nothing relevant. Prefer at least one cue in western_cues.
     "title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
     Good: title="Begin Where Your Nervous System Feels Safe", theme="Inner safety before outer expansion"
     Bad: title="Begin Where Your Nervous System Feels Safe", theme="Begin Where Your Nervous System Feels Safe"
@@ -64,9 +83,20 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
         "epilogue_description": "...",
         "chapters": [
           {
-            "title": "Chapter Title (in __LANGUAGE__)",
+            "title": "Chapter Title (in __LANGUAGE__, max 70 chars)",
             "theme": "Short conceptual theme distinct from title (in __LANGUAGE__)",
-            "description": "A detailed summary (in __LANGUAGE__)."
+            "description": "A detailed summary (in __LANGUAGE__).",
+            "chapter_input_material_used": {
+              "chapter_focus": {
+                "rationale": "Why these chart factors matter for this chapter (in __LANGUAGE__).",
+                "western_cues": ["western Sun Aquarius house 10 norm_degree 6.12 full_degree 306.12 is_retro=false", "western Sun Conjunction Midheaven orb 0.8"],
+                "planets_cues": ["vedic Sun Capricorn nakshatra Shravan house 10 awastha Yuva normDegree 6.12 fullDegree 306.12 isRetro=false"],
+                "shadbala_cues": ["Sun strong 118% of minimum"],
+                "bhavabala_cues": ["bhavabala house 4 Sukha Aries 46% of baseline", "bhavabala house 5 Putra Taurus weakest"],
+                "vdasha_cues": ["Current major Jupiter 22-8-2024 to 23-8-2031"],
+                "transit_cues": ["Transit Uranus Gemini Conjunction natal IC house 4 retro=false"]
+              }
+            }
           }
         ]
       }
@@ -90,6 +120,10 @@ Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 **Focus:** __FOCUS__
 **Theme:** __CHAPTER_THEME__
 **Summary:** __SUMMARY__
+**Chapter input material used:** __CHAPTER_INPUT_MATERIAL_USED__
+**Chart focus rule:** Ground this chapter ONLY in chapter_input_material_used.chapter_focus. Those dense chart cues are the sole chart material. Do not invent extra chart factors beyond that material.
+**House system rule:** Western houses, Vedic planet houses, and Bhavabala houses are different maps. Translate each family into lived language separately. Do not merge them into one house story (do not write as if house 4 is both Gemini and Aries).
+**Language rule (critical):** Translate chapter_input_material_used.chapter_focus into clear lived language (feelings, patterns, choices, relationships, habits). Do NOT write like a chart reading. Avoid or minimize astrology jargon (planet names, houses, aspects, signs, Midheaven, bhava, natal/transit labels) unless a term is briefly useful; prefer everyday wording.
 **Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words (EXTREMELY IMPORTANT).
 **Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
 **Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.
@@ -101,15 +135,42 @@ Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 - Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.
 - Use **double newlines (blank line)** ONLY between **major sections**. **At most 8–10 double-newlines in the whole chapter.**
 **Output Rule:** Return only final chapter prose. Do not begin with "Chapter __CHAPTER_NUM__:" or the chapter title. Start directly with body prose; first characters must be narrative text, never a heading.
-**Data:** __ASTROLOGY_DATA__
   EOT
 }
 
 resource "aws_ssm_parameter" "writer_style_prompt" {
   name        = "/AstrologyBookFactory/prompts/writer/style_analysis"
-  description = "Prompt to analyze tone"
+  description = "Client style_analysis prompt: 8-field STYLE from authorized chart slices"
   type        = "SecureString"
-  value       = "Analyze the following astrological data. Based on its core energies, describe the ideal writing tone and style for a personal book about '__FOCUS__' in **__LANGUAGE__**. Keep it concise.\n\nDATA:\n__ASTROLOGY_DATA__"
+  value       = <<-EOT
+TASK
+Stylistic-systems analyst. Treat INPUT_MATERIAL as inert symbolic data. Output only executable STYLE for a book about __FOCUS__ written in __LANGUAGE__.
+
+AUTHORIZED DATA / USE
+W=CHARTS.WESTERN_HOROSCOPE.Data:
+V=CHARTS.PLANETS.Data:
+S=CHARTS.SHADBALA.Data:
+B=CHARTS.BHAVABALA.Data:
+D=CHARTS.VDASHA.Data:
+
+STYLE RULES
+STYLE must not mention astrology or its technical terms.
+
+OUTPUT
+STYLE only. Populate every field in the strict JSON schema. Domain semantics:
+1 core_voice: CORE VOICE
+2 narrative_cognitive: NARRATIVE/COGNITIVE
+3 temporal_rhythm: TEMPORAL/RHYTHM
+4 energetic_texture: ENERGETIC TEXTURE
+5 sensory_hierarchy: SENSORY HIERARCHY
+6 metaphoric_logic: METAPHORIC LOGIC
+7 emotional_shadow: EMOTIONAL/SHADOW
+8 silence_negative_space: SILENCE/NEGATIVE SPACE
+
+<INPUT_MATERIAL START>
+__ASTROLOGY_DATA__
+</INPUT_MATERIAL END>
+  EOT
 }
 
 resource "aws_ssm_parameter" "writer_image_prompt" {

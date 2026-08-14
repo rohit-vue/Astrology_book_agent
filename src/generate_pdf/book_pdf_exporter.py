@@ -181,6 +181,12 @@ def _build_page_map_from_doc(doc, book_data) -> dict:
     return page_map
 
 
+def _is_english_book_language(language: str) -> bool:
+    """True only for English books (storefront may send 'English' or 'english')."""
+    key = str(language or "").strip().lower()
+    return key == "english" or key.startswith("english,") or key.startswith("english ")
+
+
 def save_book_as_pdf(
     title: str,
     book_data: dict,
@@ -189,10 +195,18 @@ def save_book_as_pdf(
     language: str = "English",
     openai_api_key: str = None
 ) -> tuple[str, int]:
+    include_letter = _is_english_book_language(language)
     print(
         "[PDF layout] Foreword + acknowledgments render after epilogue "
         "(blank, letter, blank, acknowledgments)."
     )
+    if include_letter:
+        print("[PDF layout] Letter to the Reader included (book language is English).")
+    else:
+        print(
+            f"[PDF layout] Letter to the Reader omitted "
+            f"(book language is {language!r}, not English)."
+        )
     output_path = os.path.join(output_dir, filename)
 
     lang_key = language.title()
@@ -220,10 +234,10 @@ def save_book_as_pdf(
     footer_date = footer_text
     print(f"[DEBUG] FINAL FOOTER SENT TO PDF:\n{footer_text}")
 
-    # Keep foreword fixed to English to match tested local behavior.
-    foreword_text = load_text_asset("foreword.txt")
-
-    foreword_text = normalize_apostrophe_spacing(foreword_text)
+    # Include the English letter only when the book language is English.
+    foreword_text = ""
+    if include_letter:
+        foreword_text = normalize_apostrophe_spacing(load_text_asset("foreword.txt"))
     for section_key in ("preface_text", "prologue_text", "epilogue_text"):
         if section_key in book_data:
             book_data[section_key] = normalize_apostrophe_spacing(book_data.get(section_key))
@@ -360,6 +374,7 @@ def save_book_as_pdf(
         </main>
 
         <div class="back-matter-no-folio">
+            {% if include_letter and foreword_text %}
             <div class="fm-break fm-break-recto">
                 <div class="page content-page" id="foreword">
                     <h2 style="margin-bottom: 0.5em;">A Letter to the Reader</h2>
@@ -372,6 +387,7 @@ def save_book_as_pdf(
             </div>
 
             <div class="page blank-page"><span style="visibility:hidden">.</span></div>
+            {% endif %}
 
             <div class="fm-break fm-break-recto">
                 <div class="page toc-page" id="acknowledgments">
@@ -480,7 +496,7 @@ def save_book_as_pdf(
         "book_title": title, "labels": L, "suffix": chapter_suffix, "footer_date": footer_date,
         "toc_entries": toc_base, **book_data, "lang": language, "html_lang": html_lang,
         "dedication_title": dedication_title, "ack_names": ack_names, "foreword_text": foreword_text,
-        "published_by_label": published_by_label
+        "include_letter": include_letter, "published_by_label": published_by_label
     }
 
     print("PDF Engine: Pass 1 (TOC probe without parity padding)")

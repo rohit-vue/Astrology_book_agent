@@ -49,7 +49,7 @@ def main():
     print("=" * 64)
     print("  PDF FROM LOCAL ARTIFACTS (offline)")
     print("  - No json.astrologyapi.com or other astrology HTTP calls")
-    print("  - No OpenAI calls (foreword stays English unless you pass a key)")
+    print("  - No OpenAI calls (letter included only when language is English)")
     print(f"  - Data source: {ARTIFACTS_DIR}/")
     print("=" * 64)
     print()

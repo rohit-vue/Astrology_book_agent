@@ -36,6 +36,10 @@ data "archive_file" "architect_book_code" {
     content  = file("${path.module}/../src/shared/structured_schemas.py")
     filename = "structured_schemas.py"
   }
+  source {
+    content  = file("${path.module}/../src/shared/chart_coverage.py")
+    filename = "chart_coverage.py"
+  }
 }
 
 resource "aws_lambda_function" "architect_book" {
@@ -45,7 +49,7 @@ resource "aws_lambda_function" "architect_book" {
   package_type = "Zip"
   handler      = "app.lambda_handler"
   runtime      = "python3.11" # Upgraded runtime
-  timeout      = 300
+  timeout      = 900
 
   filename         = data.archive_file.architect_book_code.output_path
   source_code_hash = data.archive_file.architect_book_code.output_base64sha256
@@ -65,7 +69,7 @@ resource "aws_lambda_function" "architect_book" {
       ARCHITECT_MIN_CHAPTERS      = "1"
       ARCHITECT_MAX_CHAPTERS      = "14"
       ARCHITECT_MAX_RETRIES       = "2"
-      OPENAI_TIMEOUT_SECONDS      = "120"
+      OPENAI_TIMEOUT_SECONDS      = "720"
       OPENAI_MAX_RETRIES          = "1"
       AWS_CONNECT_TIMEOUT_SECONDS = "3"
       AWS_READ_TIMEOUT_SECONDS    = "30"

@@ -10,6 +10,7 @@ services:
       - ./book_pdf_exporter_local.py:/app/generate_pdf/book_pdf_exporter.py:ro
       - ./run_local_pipeline.py:/app/run_local_pipeline.py:ro
       - ./structured_schemas.py:/app/structured_schemas.py:ro
+      - ./chart_material.py:/app/chart_material.py:ro
       - ./pipeline_config.json:/app/pipeline_config.json:ro
       - ./.env:/app/.env:ro
       - ./output:/app/output
@@ -26,6 +27,7 @@ services:
       - ./book_pdf_exporter_local.py:/app/generate_pdf/book_pdf_exporter.py:ro
       - ./run_local_batch_pipeline.py:/app/run_local_batch_pipeline.py:ro
       - ./structured_schemas.py:/app/structured_schemas.py:ro
+      - ./chart_material.py:/app/chart_material.py:ro
       - ./pipeline_config.json:/app/pipeline_config.json:ro
       - ./.env:/app/.env:ro
       - ./output:/app/output
@@ -40,6 +42,7 @@ services:
       - ./book_pdf_exporter_local.py:/app/generate_pdf/book_pdf_exporter.py:ro
       - ./run_local_batch_pipeline.py:/app/run_local_batch_pipeline.py:ro
       - ./structured_schemas.py:/app/structured_schemas.py:ro
+      - ./chart_material.py:/app/chart_material.py:ro
       - ./run_local_batch_images_from_artifacts.py:/app/run_local_batch_images_from_artifacts.py:ro
       - ./.env:/app/.env:ro
       - ./output:/app/output

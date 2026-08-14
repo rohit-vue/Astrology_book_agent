@@ -9,6 +9,13 @@ from botocore.config import Config
 from openai import AsyncOpenAI, OpenAI
 from urllib.parse import urlparse
 
+from structured_schemas import (
+    WRITING_STYLE_FIELDS,
+    responses_text_format,
+    validate_chapter_input_material_used,
+    writing_style_schema,
+)
+
 API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
 ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET")
 
@@ -53,7 +60,16 @@ TEXT_VERBOSITY_ARCHITECT = _env_str("TEXT_VERBOSITY_ARCHITECT", "high")
 
 REASONING_EFFORT_STYLE = _env_str("REASONING_EFFORT_STYLE", "medium")
 TEXT_VERBOSITY_STYLE = _env_str("TEXT_VERBOSITY_STYLE", "low")
-STYLE_MAX_OUTPUT_TOKENS = _env_int("STYLE_MAX_OUTPUT_TOKENS", 600)
+STYLE_MAX_OUTPUT_TOKENS = _env_int("STYLE_MAX_OUTPUT_TOKENS", 2500)
+
+# Chart slices the style model is authorized to use (client style_analysis prompt).
+STYLE_AUTHORIZED_CHART_KEYS = (
+    "WESTERN_HOROSCOPE",
+    "PLANETS",
+    "SHADBALA",
+    "BHAVABALA",
+    "VDASHA",
+)
 
 SECTION_MAX_OUTPUT_TOKENS = _env_int("SECTION_MAX_OUTPUT_TOKENS", 4000)
 SECTION_WORD_TARGET = _env_int("SECTION_WORD_TARGET", 550)
@@ -166,22 +182,51 @@ def get_style_prompt_template() -> str:
     return _style_prompt_template_cache
 
 
+def build_style_input_material(astrology_data: dict) -> dict:
+    """Keep only authorized chart .Data blobs for style analysis."""
+    charts = (astrology_data or {}).get("CHARTS") or {}
+    material = {}
+    for key in STYLE_AUTHORIZED_CHART_KEYS:
+        block = charts.get(key)
+        if not isinstance(block, dict):
+            continue
+        data = block.get("Data")
+        if data is not None:
+            material[key] = data
+    return {"CHARTS": material}
+
+
 def render_style_analysis_prompt(
     template: str,
     focus: str,
     language: str,
     astrology_data: dict,
 ) -> str:
-    astrology_json = json.dumps(astrology_data, ensure_ascii=False)
+    """Render style prompt with authorized chart slices only."""
+    material = build_style_input_material(astrology_data)
     replacements = {
         "__FOCUS__": focus,
         "__LANGUAGE__": language,
-        "__ASTROLOGY_DATA__": astrology_json,
+        "__ASTROLOGY_DATA__": json.dumps(material, ensure_ascii=False),
     }
     rendered = template
     for token, value in replacements.items():
         rendered = rendered.replace(token, value)
     return rendered
+
+
+def _validate_writing_style_object(style_obj: dict) -> list[str]:
+    errors = []
+    if not isinstance(style_obj, dict):
+        return ["style response is not an object"]
+    for key in WRITING_STYLE_FIELDS:
+        value = str(style_obj.get(key, "") or "").strip()
+        if not value:
+            errors.append(f"style field '{key}' missing or empty")
+    extra = set(style_obj.keys()) - set(WRITING_STYLE_FIELDS)
+    if extra:
+        errors.append(f"unexpected style fields: {sorted(extra)}")
+    return errors
 
 
 def _normalize_chapter_label(value: str) -> str:
@@ -202,9 +247,21 @@ def render_chapter_prompt(
     word_target: int,
     astrology_data: dict,
     chapter_theme: str,
+    chapter_input_material_used,
 ) -> str:
     """Substitute SSM chapter template tokens (legacy + current naming)."""
+    del astrology_data  # focus-only: full chart is not injected into chapter prompts
     theme = str(chapter_theme or "").strip()
+    if isinstance(chapter_input_material_used, dict):
+        # Prefer chapter_focus-only payload for the writer.
+        focus_obj = chapter_input_material_used.get("chapter_focus")
+        if isinstance(focus_obj, dict):
+            material_payload = {"chapter_focus": focus_obj}
+        else:
+            material_payload = chapter_input_material_used
+        notes = json.dumps(material_payload, ensure_ascii=False)
+    else:
+        notes = str(chapter_input_material_used or "").strip()
     if not theme:
         raise ValueError(
             f"chapter {chapter_num} missing theme "
@@ -214,7 +271,8 @@ def render_chapter_prompt(
         raise ValueError(
             f"chapter {chapter_num} theme equals title; refusing to default theme to title"
         )
-    astrology_json = json.dumps(astrology_data, ensure_ascii=False)
+    if not notes:
+        raise ValueError(f"chapter {chapter_num} missing chapter_input_material_used")
     replacements = {
         "__CHAPTER_NUM__": str(chapter_num),
         "__CHAPTER_TITLE__": title,
@@ -225,10 +283,13 @@ def render_chapter_prompt(
         "__FOCUS__": focus,
         "__SUMMARY__": description,
         "__CHAPTER_SUMMARY__": description,
+        "__CHAPTER_INPUT_MATERIAL_USED__": notes,
+        "__SOURCE_NOTES__": notes,  # legacy SSM token alias
         "__WORD_TARGET__": str(word_target),
         "__CHAPTER_WORD_MIN__": str(CHAPTER_WORD_MIN),
         "__CHAPTER_WORD_MAX__": str(CHAPTER_WORD_MAX),
-        "__ASTROLOGY_DATA__": astrology_json,
+        # Kept for old SSM templates; new chapter prompt must not rely on full chart.
+        "__ASTROLOGY_DATA__": "",
     }
     rendered = template
     for token, value in replacements.items():
@@ -479,20 +540,42 @@ def _section_descriptions_from_structure(structure: dict) -> tuple[str, str, str
 
 
 async def generate_writing_style(chart: dict, focus: str, language: str) -> str:
-    """Build writing style from SSM style_analysis prompt + full astrology-json chart."""
+    """Build structured 8-field STYLE JSON from SSM style_analysis + authorized charts."""
     template = get_style_prompt_template()
     prompt = render_style_analysis_prompt(template, focus, language, chart)
+    schema = writing_style_schema()
+    print("Generating writing style profile (Responses API, json_schema)...")
     style_resp = await async_openai_client.responses.create(
         model=MODEL_CONTENT,
         input=[{"role": "user", "content": prompt}],
-        text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_STYLE},
+        text=responses_text_format(
+            "writing_style",
+            schema,
+            verbosity=TEXT_VERBOSITY_STYLE,
+        ),
         reasoning={"effort": REASONING_EFFORT_STYLE},
         max_output_tokens=STYLE_MAX_OUTPUT_TOKENS,
     )
-    style = _response_text_from_obj(style_resp).strip()
-    if not style:
+    if getattr(style_resp, "status", None) == "incomplete":
+        raise ValueError(
+            f"style analysis response incomplete: {getattr(style_resp, 'incomplete_details', None)}"
+        )
+    raw = _response_text_from_obj(style_resp).strip()
+    if not raw:
         raise ValueError("empty style analysis response")
-    print(f"Generated writing style profile ({len(style)} chars)")
+    try:
+        style_obj = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"style analysis returned invalid JSON: {e}") from e
+    errors = _validate_writing_style_object(style_obj)
+    if errors:
+        raise ValueError("style analysis validation failed: " + "; ".join(errors))
+    normalized = {key: str(style_obj[key]).strip() for key in WRITING_STYLE_FIELDS}
+    style = json.dumps(normalized, ensure_ascii=False, indent=2)
+    print(
+        f"Generated writing style profile ({len(style)} chars, "
+        f"{len(WRITING_STYLE_FIELDS)} fields)"
+    )
     return style
 
 
@@ -670,6 +753,7 @@ def build_chapter_batch_tasks(
         title = str(ch.get("title", "")).strip()
         theme = str(ch.get("theme", "")).strip()
         description = str(ch.get("description", "")).strip()
+        material = ch.get("chapter_input_material_used")
         if not title:
             raise ValueError(f"chapter {chapter_num} missing title")
         if not theme:
@@ -683,7 +767,16 @@ def build_chapter_batch_tasks(
             )
         if not description:
             raise ValueError(f"chapter {chapter_num} missing description")
+        material_errors = validate_chapter_input_material_used(material, chapter_num)
+        if material_errors:
+            raise ValueError("; ".join(material_errors))
+        # Focus-only: never send chart_snapshot / full chart to the writer.
+        if isinstance(material, dict) and isinstance(material.get("chapter_focus"), dict):
+            material = {"chapter_focus": material["chapter_focus"]}
         custom_id = f"chapter-{chapter_num}"
+        focus_obj = (material or {}).get("chapter_focus") if isinstance(material, dict) else {}
+        rationale = str((focus_obj or {}).get("rationale", "") or "")
+        print(f"Chapter {chapter_num} focus: {rationale[:120]}")
 
         prompt = render_chapter_prompt(
             chapter_prompt_template,
@@ -696,6 +789,7 @@ def build_chapter_batch_tasks(
             word_target,
             astrology_data,
             chapter_theme=theme,
+            chapter_input_material_used=material,
         )
 
         tasks.append(

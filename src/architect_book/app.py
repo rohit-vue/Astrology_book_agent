@@ -6,7 +6,13 @@ from botocore.config import Config
 from openai import OpenAI
 from urllib.parse import urlparse
 
-from structured_schemas import book_structure_schema, responses_text_format
+from chart_coverage import validate_book_chart_coverage
+from structured_schemas import (
+    CHAPTER_TITLE_MAX_LENGTH,
+    book_structure_schema,
+    responses_text_format,
+    validate_chapter_input_material_used,
+)
 
 
 API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
@@ -176,12 +182,19 @@ def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
         title = str(chapter.get("title", "")).strip()
         theme = str(chapter.get("theme", "")).strip()
         description = str(chapter.get("description", "")).strip()
+        material = chapter.get("chapter_input_material_used")
         if not title:
             errors.append(f"chapter {idx} title missing or empty")
+        elif len(title) > CHAPTER_TITLE_MAX_LENGTH:
+            errors.append(
+                f"chapter {idx} title exceeds {CHAPTER_TITLE_MAX_LENGTH} chars "
+                f"(got {len(title)})"
+            )
         if not theme:
             errors.append(f"chapter {idx} theme missing or empty")
         if not description:
             errors.append(f"chapter {idx} description missing or empty")
+        errors.extend(validate_chapter_input_material_used(material, idx))
         if title and theme and _normalize_chapter_label(title) == _normalize_chapter_label(theme):
             errors.append(
                 f"chapter {idx} theme must differ from title "
@@ -216,7 +229,22 @@ def get_prompts_from_ssm(astrology_data: dict, focus: str, language: str, qanda:
     return system_prompt, user_prompt
 
 
-def architect_book_structure(system_prompt: str, user_prompt: str) -> dict:
+def _log_cue_coverage_warnings(chapters: list, astrology_data: dict | None) -> None:
+    """Coverage/reuse are quality warnings only; they must not fail the book."""
+    warnings = validate_book_chart_coverage(chapters, astrology_data)
+    if warnings:
+        print(f"WARNING: cue coverage/reuse ({len(warnings)}):")
+        for item in warnings:
+            print(f"  - {item}")
+    else:
+        print("Cue coverage + reuse checks passed.")
+
+
+def architect_book_structure(
+    system_prompt: str,
+    user_prompt: str,
+    astrology_data: dict | None = None,
+) -> dict:
     max_attempts = ARCHITECT_MAX_RETRIES + 1
     last_errors: list[str] = []
 
@@ -261,7 +289,16 @@ def architect_book_structure(system_prompt: str, user_prompt: str) -> dict:
             chapters = _chapters_from_structure(full_structure)
             print(f"Generated valid structure with {len(chapters)} chapters.")
             for i, ch in enumerate(chapters, start=1):
-                print(f"  Chapter {i}: {ch.get('title', '')} | theme: {ch.get('theme', '')}")
+                title = str(ch.get("title", "") or "")
+                material = ch.get("chapter_input_material_used") or {}
+                focus = (material.get("chapter_focus") or {}) if isinstance(material, dict) else {}
+                rationale = str(focus.get("rationale", "") or "")
+                print(
+                    f"  Chapter {i}: {title} ({len(title)} chars) | "
+                    f"theme: {ch.get('theme', '')} | "
+                    f"focus: {rationale[:80]}"
+                )
+            _log_cue_coverage_warnings(chapters, astrology_data)
             return full_structure
 
         last_errors = errors
@@ -296,7 +333,7 @@ def lambda_handler(event, context):
         astrology_data = json.loads(s3_object["Body"].read().decode("utf-8"))
 
         system_prompt, user_prompt = get_prompts_from_ssm(astrology_data, focus, language, qanda_content)
-        full_structure = architect_book_structure(system_prompt, user_prompt)
+        full_structure = architect_book_structure(system_prompt, user_prompt, astrology_data)
 
         output_key = f"book-structures/{order_id}/{line_item_id}.json"
         s3_client.put_object(

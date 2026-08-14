@@ -1,5 +1,14 @@
-"""JSON Schemas for OpenAI Structured Outputs (Architect + birth parse)."""
+"""JSON Schemas for OpenAI Structured Outputs (Architect + birth parse + style)."""
 from __future__ import annotations
+
+CHAPTER_TITLE_MAX_LENGTH = 70
+
+# Families that must be prefixed so western / vedic / bhavabala houses stay distinct.
+LABELED_FAMILY_PREFIX = {
+    "western_cues": "western",
+    "planets_cues": "vedic",
+    "bhavabala_cues": "bhavabala",
+}
 
 
 def _string_object(properties: tuple[str, ...]) -> dict:
@@ -11,12 +20,128 @@ def _string_object(properties: tuple[str, ...]) -> dict:
     }
 
 
+def _string_array() -> dict:
+    return {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+
+
+def _chapter_focus_schema() -> dict:
+    """Architect-selected dense chart cues (focus-only; no chart_snapshot)."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "rationale": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Why these chart factors are the primary material for this chapter."
+                ),
+            },
+            "western_cues": {
+                **_string_array(),
+                "description": (
+                    "Prefix every cue with 'western '. Dense WESTERN_HOROSCOPE "
+                    "cues for THIS chapter (soft cap ~6-10). Use western "
+                    "signs/houses only. Include name/sign/house/norm_degree/"
+                    "full_degree/is_retro; type+orb for aspects. Assign each "
+                    "significant western factor to one primary chapter; do not "
+                    "paste the same full list across chapters."
+                ),
+            },
+            "planets_cues": {
+                **_string_array(),
+                "description": (
+                    "Prefix every cue with 'vedic '. Dense PLANETS cues for "
+                    "THIS chapter (soft cap ~4-8), including sign, nakshatra, "
+                    "house, awastha, isRetro, normDegree, fullDegree. Vedic "
+                    "houses/signs are not western houses."
+                ),
+            },
+            "shadbala_cues": {
+                **_string_array(),
+                "description": (
+                    "Shadbala cues for this chapter only (soft cap ~2-6). "
+                    "Book must cover the strongest planet and any not-strong planet."
+                ),
+            },
+            "bhavabala_cues": {
+                **_string_array(),
+                "description": (
+                    "Prefix every cue with 'bhavabala '. Include Sanskrit name "
+                    "(Sukha, Putra, Dhana, etc.). Soft cap ~2-6. Never treat "
+                    "these as western houses."
+                ),
+            },
+            "vdasha_cues": {
+                **_string_array(),
+                "description": (
+                    "Current VDASHA periods for this chapter (soft cap ~2-5). "
+                    "Copy planet + period dates only; no psychological meanings. "
+                    "Dasha stack may repeat across chapters."
+                ),
+            },
+            "transit_cues": {
+                **_string_array(),
+                "description": (
+                    "Dense NATAL_TRANSITS cues for today for THIS chapter "
+                    "(soft cap ~4-8). Include transit planet, aspect, natal "
+                    "point, signs/houses, retro. Assign each significant transit "
+                    "to one primary chapter; only 1-2 signature transits may "
+                    "repeat (max 3 chapters)."
+                ),
+            },
+        },
+        "required": [
+            "rationale",
+            "western_cues",
+            "planets_cues",
+            "shadbala_cues",
+            "bhavabala_cues",
+            "vdasha_cues",
+            "transit_cues",
+        ],
+    }
+
+
+def _chapter_input_material_used_schema() -> dict:
+    """Client field: Architect fills chapter_focus only (no chart_snapshot)."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "chapter_focus": _chapter_focus_schema(),
+        },
+        "required": ["chapter_focus"],
+    }
+
+
+def _chapter_item() -> dict:
+    """Chapter outline item: title length cap + chapter_input_material_used."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": CHAPTER_TITLE_MAX_LENGTH,
+            },
+            "theme": {"type": "string", "minLength": 1},
+            "description": {"type": "string", "minLength": 1},
+            "chapter_input_material_used": _chapter_input_material_used_schema(),
+        },
+        "required": ["title", "theme", "description", "chapter_input_material_used"],
+    }
+
+
 def book_structure_schema(min_chapters: int, max_chapters: int) -> dict:
     """Schema matching validate_book_structure / Architect outline."""
     if min_chapters < 1 or max_chapters < min_chapters:
         raise ValueError(f"invalid chapter bounds: min={min_chapters} max={max_chapters}")
 
-    chapter_item = _string_object(("title", "theme", "description"))
     return {
         "type": "object",
         "additionalProperties": False,
@@ -44,7 +169,7 @@ def book_structure_schema(min_chapters: int, max_chapters: int) -> dict:
                         "type": "array",
                         "minItems": min_chapters,
                         "maxItems": max_chapters,
-                        "items": chapter_item,
+                        "items": _chapter_item(),
                     },
                 },
                 "required": [
@@ -74,6 +199,76 @@ BIRTH_DATA_SCHEMA: dict = {
     },
     "required": ["day", "month", "year", "hour", "min", "lat", "lon", "tzone"],
 }
+
+
+WRITING_STYLE_FIELDS: tuple[str, ...] = (
+    "core_voice",
+    "narrative_cognitive",
+    "temporal_rhythm",
+    "energetic_texture",
+    "sensory_hierarchy",
+    "metaphoric_logic",
+    "emotional_shadow",
+    "silence_negative_space",
+)
+
+
+def writing_style_schema() -> dict:
+    """Strict 8-field writing STYLE profile (client style_analysis schema)."""
+    return _string_object(WRITING_STYLE_FIELDS)
+
+
+def validate_chapter_input_material_used(material, idx: int) -> list[str]:
+    """Validate focus-only chapter_input_material_used object."""
+    errors: list[str] = []
+    if not isinstance(material, dict):
+        return [f"chapter {idx} chapter_input_material_used missing or not an object"]
+    focus = material.get("chapter_focus")
+    if not isinstance(focus, dict):
+        return [
+            f"chapter {idx} chapter_input_material_used.chapter_focus "
+            "missing or not an object"
+        ]
+    rationale = str(focus.get("rationale", "") or "").strip()
+    if not rationale:
+        errors.append(f"chapter {idx} chapter_focus.rationale missing or empty")
+    cue_keys = (
+        "western_cues",
+        "planets_cues",
+        "shadbala_cues",
+        "bhavabala_cues",
+        "vdasha_cues",
+        "transit_cues",
+    )
+    total_cues = 0
+    for key in cue_keys:
+        val = focus.get(key)
+        if not isinstance(val, list):
+            errors.append(f"chapter {idx} chapter_focus.{key} must be an array")
+            continue
+        total_cues += sum(1 for x in val if str(x).strip())
+        prefix = LABELED_FAMILY_PREFIX.get(key)
+        if prefix:
+            for cue in val:
+                text = str(cue or "").strip()
+                if not text:
+                    continue
+                if not text.casefold().startswith(prefix):
+                    errors.append(
+                        f"chapter {idx} chapter_focus.{key} must start with "
+                        f"'{prefix} ' (got {text[:80]!r})"
+                    )
+                    break
+    if total_cues == 0:
+        errors.append(
+            f"chapter {idx} chapter_focus has no chart cues "
+            "(need at least one non-empty cue across western/planets/shadbala/"
+            "bhavabala/vdasha/transit)"
+        )
+    western = focus.get("western_cues")
+    if isinstance(western, list) and not any(str(x).strip() for x in western):
+        errors.append(f"chapter {idx} chapter_focus.western_cues is empty")
+    return errors
 
 
 def responses_text_format(
