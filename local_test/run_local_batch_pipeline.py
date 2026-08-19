@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Local end-to-end book generation pipeline (BATCH API variant).
-Uses the OpenAI Batch API for chapter text via /v1/responses (GPT-5.5 reasoning + verbosity;
-see repo gpt-5.5-doc.txt). Images use Batch /v1/images/generations (gpt-image-2).
+Uses the OpenAI Batch API for chapter text via /v1/responses (GPT-5.6 Sol).
+Images use Batch /v1/images/generations (gpt-image-2).
 
 Pipeline steps:
   1. Fetch astrology data (astrologyapi.com)
-  2. Architect book structure (OpenAI Responses API, GPT-5.5, json_schema) with validation + retry
+  2. Architect book structure (OpenAI Responses API, GPT-5.6 Sol, json_schema) with validation + retry
   3a. Style analysis (Responses API json_schema, 8-field STYLE) then submit chapter + section text as one Batch job
   3b. Poll until batch completes, validate outputs, retry failures, collect results
   3c. Generate chapter images via Batch API (with validation + retry)
@@ -41,6 +41,7 @@ from structured_schemas import (
 )
 from chart_material import (
     enrich_structure_with_chart_snapshots,
+    validate_astrology_artifact,
     validate_book_chart_coverage,
     validate_chapter_input_material_used,
 )
@@ -58,8 +59,8 @@ ASTRO_WESTERN_KEY = os.environ["ASTROLOGY_WESTERN_API_KEY"]
 ASTRO_VEDIC_UID = os.environ["ASTROLOGY_VEDIC_USER_ID"]
 ASTRO_VEDIC_KEY = os.environ["ASTROLOGY_VEDIC_API_KEY"]
 
-# GPT-5.5 for local batch test (Responses API; reasoning + text.verbosity per gpt-5.5-doc.txt)
-MODEL_CONTENT = "gpt-5.5"
+# GPT-5.6 Sol for local batch test (Architect, style, chapters/sections). Images unchanged.
+MODEL_CONTENT = "gpt-5.6-sol"
 MODEL_IMAGE = "gpt-image-2"
 
 # Chapter batch: high reasoning + high verbosity; reserve headroom for reasoning + ~10k-word prose
@@ -116,7 +117,8 @@ IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
 
 ARCHITECT_SYSTEM_PROMPT = """You are an ASI (Artificial Superintelligence) acting as a master psychological interpreter and book architect.
 Your persona is wise, insightful, and empathetic.
-**CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**."""
+**CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**.
+You MUST design the book through the lens of "__FOCUS__"."""
 
 ARCHITECT_USER_PROMPT = """**CRITICAL LANGUAGE REQUIREMENT:**
 The Book Title, Chapter Titles, Themes, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
@@ -237,6 +239,30 @@ STYLE only. Populate every field in the strict JSON schema. Domain semantics:
 __ASTROLOGY_DATA__
 </INPUT_MATERIAL END>
 """
+
+# Mirrors terraform/ssm.tf writer preface/prologue/epilogue (tune independently).
+SECTION_PROMPT_BODY = """Generate narrative prose content for a personal astrology book section.
+Section Type: __SECTION_TYPE__
+Language: __LANGUAGE__
+Style: __STYLE__
+Context: __DESCRIPTION__
+Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
+Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
+Layout Rule: This section must fit on two printed pages. End with a complete sentence.
+Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
+STRICT RULES:
+- Output only body text.
+- No headings or titles.
+- No markdown.
+- No labels.
+- Start directly with prose.
+- Use second person POV."""
+
+SECTION_PROMPT_TEMPLATES = {
+    "preface": SECTION_PROMPT_BODY,
+    "prologue": SECTION_PROMPT_BODY,
+    "epilogue": SECTION_PROMPT_BODY,
+}
 
 METADATA_KEYS = (
     "title",
@@ -576,23 +602,38 @@ async def generate_writing_style(async_client: AsyncOpenAI, chart: dict, focus: 
     return style
 
 
+def _section_prompt_template(name: str) -> str:
+    key = str(name or "").strip().lower()
+    template = SECTION_PROMPT_TEMPLATES.get(key)
+    if not template:
+        raise ValueError(f"unknown section type for prompt template: {name!r}")
+    return template
+
+
+def render_section_prompt(name, description, style, language):
+    replacements = {
+        "__SECTION_TYPE__": name,
+        "__LANGUAGE__": language,
+        "__STYLE__": style,
+        "__DYNAMIC_STYLE__": style,
+        "__DESCRIPTION__": description,
+        "__CONTEXT__": description,
+        "__SECTION_WORD_TARGET__": str(SECTION_WORD_TARGET),
+        "__SECTION_WORD_MIN__": str(SECTION_WORD_MIN),
+        "__SECTION_WORD_MAX__": str(SECTION_WORD_MAX),
+        "__WORD_TARGET__": str(SECTION_WORD_TARGET),
+    }
+    rendered = _section_prompt_template(name)
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    leftover = sorted(set(re.findall(r"__[A-Z0-9_]+__", rendered)))
+    if leftover:
+        print(f"  WARNING: {name} prompt still has unreplaced placeholders: {leftover}")
+    return rendered
+
+
 def _section_batch_prompt(name, description, style, language):
-    return f"""Generate narrative prose content for a personal astrology book section.
-Section Type: {name}
-Language: {language}
-Style: {style}
-Context: {description}
-Word Contract: Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
-Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
-Layout Rule: This section must fit on two printed pages. End with a complete sentence.
-Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
-STRICT RULES:
-- Output only body text.
-- No headings or titles.
-- No markdown.
-- No labels.
-- Start directly with prose.
-- Use second person POV."""
+    return render_section_prompt(name, description, style, language)
 
 
 def build_section_batch_tasks(structure, style, language):
@@ -648,7 +689,7 @@ def _sections_from_batch_results(merged, section_manifest):
 
 
 # ---------------------------------------------------------------------------
-# GPT-5.5 /v1/responses helpers (sync, async, and Batch output bodies)
+# GPT-5.6 Sol /v1/responses helpers (sync, async, and Batch output bodies)
 # ---------------------------------------------------------------------------
 
 def _extract_text_from_responses_body_dict(body: dict) -> str:
@@ -733,6 +774,8 @@ def fetch_astrology(birth_data, order_id):
             "Data": call_astrology_api(endpoint, auth, payload),
         }
 
+    validate_astrology_artifact(comprehensive_data)
+
     out_path = os.path.join(ARTIFACTS_DIR, "astrology_data.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(comprehensive_data, f, indent=2, ensure_ascii=False)
@@ -742,7 +785,7 @@ def fetch_astrology(birth_data, order_id):
 
 
 # ===========================================================================
-# STEP 2: Architect Book Structure (GPT-5.5 Responses API)
+# STEP 2: Architect Book Structure (GPT-5.6 Sol Responses API)
 # ===========================================================================
 
 def architect_book(astrology_data, focus, language):
@@ -750,7 +793,11 @@ def architect_book(astrology_data, focus, language):
     print("STEP 2: Architecting Book Structure for the focus: ", focus, " in language: ", language)
     print("=" * 60)
 
-    system_prompt = ARCHITECT_SYSTEM_PROMPT.replace("__LANGUAGE__", language)
+    system_prompt = (
+        ARCHITECT_SYSTEM_PROMPT
+        .replace("__LANGUAGE__", language)
+        .replace("__FOCUS__", focus)
+    )
     user_prompt = (
         ARCHITECT_USER_PROMPT
         .replace("__FOCUS__", focus)
@@ -1668,6 +1715,7 @@ def main():
             raise FileNotFoundError(f"SKIP_FETCH set but missing {astrology_path}")
         with open(astrology_path, "r", encoding="utf-8") as f:
             astrology_data = json.load(f)
+        validate_astrology_artifact(astrology_data)
         print(f"  SKIP_FETCH: reusing {astrology_path}")
     else:
         astrology_data = fetch_astrology(birth_data, order_id)

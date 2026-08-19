@@ -60,6 +60,8 @@ resource "aws_lambda_function" "notify_lulu" {
     variables = {
       API_KEYS_SECRET_ARN         = aws_secretsmanager_secret.api_keys_v2.arn
       LULU_POD_PACKAGE_ID         = "0550X0850.BW.STD.LW.060UC444.MNG"
+      LULU_POD_PACKAGE_ID_HARDCOVER = "0550X0850.BW.STD.LW.060UC444.MNG"
+      LULU_POD_PACKAGE_ID_PAPERBACK = "0550X0850.BW.STD.PB.060UC444.MXX"
       LULU_CONTACT_EMAIL          = "orders@luminaryblueprint.com"
       LULU_PRODUCTION_DELAY_MINUTES = "60"
       LULU_PRINT_JOB_MAX_RETRIES        = "3"

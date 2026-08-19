@@ -58,12 +58,7 @@ def verify_shopify_webhook(data, hmac_header):
         return False
         
     digest = hmac.new(SHOPIFY_WEBHOOK_SECRET.encode('utf-8'), data, hashlib.sha256).digest()
-    computed_hmac = base64.b64encode(digest).decode('utf-8') 
-    
-    print(f"DEBUG SECRET (First 4): {SHOPIFY_WEBHOOK_SECRET[:4]}...")
-    print(f"DEBUG HMAC Received:   {hmac_header}")
-    print(f"DEBUG HMAC Calculated: {computed_hmac}")
-    
+    computed_hmac = base64.b64encode(digest).decode('utf-8')
     return hmac.compare_digest(computed_hmac, hmac_header)
 
 def lambda_handler(event, context):

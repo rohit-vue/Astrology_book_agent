@@ -8,6 +8,7 @@ resource "aws_ssm_parameter" "architect_system_prompt" {
     You are an ASI (Artificial Superintelligence) acting as a master psychological interpreter and book architect.
     Your persona is wise, insightful, and empathetic.
     **CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**.
+    You MUST design the book through the lens of "__FOCUS__".
   EOT
 }
 
@@ -135,6 +136,78 @@ Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 - Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.
 - Use **double newlines (blank line)** ONLY between **major sections**. **At most 8–10 double-newlines in the whole chapter.**
 **Output Rule:** Return only final chapter prose. Do not begin with "Chapter __CHAPTER_NUM__:" or the chapter title. Start directly with body prose; first characters must be narrative text, never a heading.
+  EOT
+}
+
+resource "aws_ssm_parameter" "writer_preface_prompt" {
+  name        = "/AstrologyBookFactory/prompts/writer/preface"
+  description = "Prompt for writing the book preface (batch text track)"
+  type        = "SecureString"
+  value       = <<-EOT
+Generate narrative prose content for a personal astrology book section.
+Section Type: __SECTION_TYPE__
+Language: __LANGUAGE__
+Style: __STYLE__
+Context: __DESCRIPTION__
+Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
+Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
+Layout Rule: This section must fit on two printed pages. End with a complete sentence.
+Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
+STRICT RULES:
+- Output only body text.
+- No headings or titles.
+- No markdown.
+- No labels.
+- Start directly with prose.
+- Use second person POV.
+  EOT
+}
+
+resource "aws_ssm_parameter" "writer_prologue_prompt" {
+  name        = "/AstrologyBookFactory/prompts/writer/prologue"
+  description = "Prompt for writing the book prologue (batch text track)"
+  type        = "SecureString"
+  value       = <<-EOT
+Generate narrative prose content for a personal astrology book section.
+Section Type: __SECTION_TYPE__
+Language: __LANGUAGE__
+Style: __STYLE__
+Context: __DESCRIPTION__
+Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
+Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
+Layout Rule: This section must fit on two printed pages. End with a complete sentence.
+Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
+STRICT RULES:
+- Output only body text.
+- No headings or titles.
+- No markdown.
+- No labels.
+- Start directly with prose.
+- Use second person POV.
+  EOT
+}
+
+resource "aws_ssm_parameter" "writer_epilogue_prompt" {
+  name        = "/AstrologyBookFactory/prompts/writer/epilogue"
+  description = "Prompt for writing the book epilogue (batch text track)"
+  type        = "SecureString"
+  value       = <<-EOT
+Generate narrative prose content for a personal astrology book section.
+Section Type: __SECTION_TYPE__
+Language: __LANGUAGE__
+Style: __STYLE__
+Context: __DESCRIPTION__
+Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
+Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
+Layout Rule: This section must fit on two printed pages. End with a complete sentence.
+Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
+STRICT RULES:
+- Output only body text.
+- No headings or titles.
+- No markdown.
+- No labels.
+- Start directly with prose.
+- Use second person POV.
   EOT
 }
 

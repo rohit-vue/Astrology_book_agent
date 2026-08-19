@@ -32,9 +32,15 @@ def lambda_handler(event, context):
         return payload
 
     download_links = []
+    physical_formats = []
     for book in processed_books:
         title = book.get('cover_title', 'Your Astrology Book')
         ebook_path = book.get('ebook_s3_path')
+        book_format = (book.get("book_format") or "").strip().lower()
+        if not book_format:
+            book_format = "digital" if not book.get("requires_shipping", True) else "hardcover"
+        if book_format in {"hardcover", "paperback"}:
+            physical_formats.append(book_format)
         
         if ebook_path:
             url = generate_presigned_url(ebook_path)
@@ -43,6 +49,25 @@ def lambda_handler(event, context):
     if not download_links:
         print("No eBooks found to send.")
         return payload
+
+    if physical_formats:
+        if all(fmt == "hardcover" for fmt in physical_formats):
+            physical_note = (
+                "<p>Your physical hardcover book is currently being printed "
+                "and will ship separately.</p>"
+            )
+        elif all(fmt == "paperback" for fmt in physical_formats):
+            physical_note = (
+                "<p>Your physical paperback book is currently being printed "
+                "and will ship separately.</p>"
+            )
+        else:
+            physical_note = (
+                "<p>Your physical book(s) are currently being printed "
+                "and will ship separately.</p>"
+            )
+    else:
+        physical_note = ""
 
     html_body = f"""
     <html>
@@ -54,7 +79,7 @@ def lambda_handler(event, context):
         <ul>
             {''.join(download_links)}
         </ul>
-        <p>Your physical hardcover book is currently being printed and will ship separately.</p>
+        {physical_note}
         <p>Enjoy your journey!</p>
     </body>
     </html>

@@ -63,6 +63,14 @@ data "archive_file" "generate_cover_package" {
   depends_on = [null_resource.build_generate_cover_package]
 }
 
+# Direct UpdateFunctionCode rejects zips over ~70MB; S3 deploy allows up to ~250MB.
+resource "aws_s3_object" "generate_cover_package" {
+  bucket = aws_s3_bucket.artifacts_bucket.id
+  key    = "lambda-packages/generate_cover_package.zip"
+  source = data.archive_file.generate_cover_package.output_path
+  etag   = data.archive_file.generate_cover_package.output_md5
+}
+
 resource "aws_lambda_function" "generate_cover" {
   function_name = "${var.project_name}-GenerateCover"
   role          = aws_iam_role.generate_cover_role.arn
@@ -73,22 +81,22 @@ resource "aws_lambda_function" "generate_cover" {
   timeout      = 300
   memory_size  = 512
 
-  filename         = data.archive_file.generate_cover_package.output_path
+  s3_bucket        = aws_s3_object.generate_cover_package.bucket
+  s3_key           = aws_s3_object.generate_cover_package.key
   source_code_hash = data.archive_file.generate_cover_package.output_base64sha256
 
   layers = [
     aws_lambda_layer_version.shared_libraries.arn
   ]
 
-  lifecycle {
-    ignore_changes = all
-  }
   environment {
     variables = {
       API_KEYS_SECRET_ARN   = aws_secretsmanager_secret.api_keys_v2.arn
       ARTIFACTS_BUCKET      = aws_s3_bucket.artifacts_bucket.id
       LULU_API_BASE         = "https://api.lulu.com"
       LULU_POD_PACKAGE_ID   = "0550X0850.BW.STD.LW.060UC444.MNG"
+      LULU_POD_PACKAGE_ID_HARDCOVER = "0550X0850.BW.STD.LW.060UC444.MNG"
+      LULU_POD_PACKAGE_ID_PAPERBACK = "0550X0850.BW.STD.PB.060UC444.MXX"
       COVER_DYNAMIC_ENABLED   = "1"
       MODEL_COVER_IMAGE       = "gpt-image-2"
       COVER_IMAGE_SIZE        = "2560x1440"

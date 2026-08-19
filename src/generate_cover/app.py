@@ -16,6 +16,12 @@ ARTIFACTS_BUCKET = os.environ.get("ARTIFACTS_BUCKET")
 API_KEYS_SECRET_ARN = os.environ.get("API_KEYS_SECRET_ARN")
 LULU_API_BASE = os.environ.get("LULU_API_BASE", "https://api.lulu.com").rstrip("/")
 LULU_POD_PACKAGE_ID = os.environ.get("LULU_POD_PACKAGE_ID", "0550X0850.BW.STD.LW.060UC444.MNG")
+LULU_POD_PACKAGE_ID_HARDCOVER = os.environ.get(
+    "LULU_POD_PACKAGE_ID_HARDCOVER", LULU_POD_PACKAGE_ID
+)
+LULU_POD_PACKAGE_ID_PAPERBACK = os.environ.get(
+    "LULU_POD_PACKAGE_ID_PAPERBACK", "0550X0850.BW.STD.PB.060UC444.MXX"
+)
 TEXT_WRAP_WIDTH_RATIO = 0.85
 FRONT_COVER_PREVIEW_WIDTH = 1024
 # Match Lulu front panel aspect (5.895" x 9") so preview JPG has no letterboxing.
@@ -307,12 +313,23 @@ def fetch_lulu_cover_dimensions_inches(
     return float(data["width"]), float(data["height"])
 
 
-def _legacy_cover_size_inches(page_count: int) -> Tuple[float, float, float]:
+def resolve_pod_package_id(book_format: str | None) -> str:
+    fmt = (book_format or "hardcover").strip().lower()
+    if fmt == "paperback":
+        return LULU_POD_PACKAGE_ID_PAPERBACK
+    return LULU_POD_PACKAGE_ID_HARDCOVER
+
+
+def is_paperback_format(book_format: str | None) -> bool:
+    return (book_format or "").strip().lower() == "paperback"
+
+
+def _legacy_cover_size_inches(page_count: int, paperback: bool = False) -> Tuple[float, float, float]:
     """Previous approximation (spine heuristic) — used only if Lulu API fails."""
     PAGE_MULTIPLIER = 0.002252
     COVER_WIDTH = 5.895
     COVER_HEIGHT = 9.0
-    FLAP_WIDTH = 3.5
+    FLAP_WIDTH = 0.0 if paperback else 3.5
     BLEED = 0.125
     spine_width = page_count * PAGE_MULTIPLIER
     total_w = (BLEED * 2) + (FLAP_WIDTH * 2) + (COVER_WIDTH * 2) + spine_width
@@ -412,14 +429,16 @@ def fit_image_cover_crop(
     return img.resize((width, height), Image.Resampling.LANCZOS)
 
 
-def resolve_cover_layout_inches(page_count: int, pod_package_id: str) -> Tuple[float, float, float]:
+def resolve_cover_layout_inches(
+    page_count: int, pod_package_id: str, paperback: bool = False
+) -> Tuple[float, float, float]:
     COVER_WIDTH = 5.895
-    FLAP_WIDTH = 3.5
+    FLAP_WIDTH = 0.0 if paperback else 3.5
     BLEED = 0.125
     fixed_band = (BLEED * 2) + (FLAP_WIDTH * 2) + (COVER_WIDTH * 2)
 
     if os.environ.get("USE_LEGACY_COVER_LAYOUT", "").strip().lower() in ("1", "true", "yes"):
-        return _legacy_cover_size_inches(page_count)
+        return _legacy_cover_size_inches(page_count, paperback=paperback)
 
     try:
         client_key, client_secret = _get_lulu_api_keys()
@@ -434,7 +453,7 @@ def resolve_cover_layout_inches(page_count: int, pod_package_id: str) -> Tuple[f
         return total_w, total_h, spine_width
     except Exception as e:
         print(f"Lulu cover-dimensions unavailable ({e}); using legacy spine estimate.")
-        return _legacy_cover_size_inches(page_count)
+        return _legacy_cover_size_inches(page_count, paperback=paperback)
 
 
 def render_cover_canvas(
@@ -444,19 +463,25 @@ def render_cover_canvas(
     """Build full dust-jacket image plus front-panel crop box (x, y, w, h) in pixels."""
     page_count = int(payload["page_count"])
     language = payload.get("language", "English")
+    book_format = payload.get("book_format", "hardcover")
+    paperback = is_paperback_format(book_format)
+    pod_package_id = resolve_pod_package_id(book_format)
 
     DPI = 300
     COVER_WIDTH = 5.895
-    FLAP_WIDTH = 3.5
+    FLAP_WIDTH = 0.0 if paperback else 3.5
     BLEED = 0.125
 
     total_w_inch, total_h_inch, spine_width = resolve_cover_layout_inches(
-        page_count, LULU_POD_PACKAGE_ID
+        page_count, pod_package_id, paperback=paperback
     )
 
     w_px = int(round(total_w_inch * DPI))
     h_px = int(round(total_h_inch * DPI))
-    front_x = int(round((BLEED + FLAP_WIDTH + COVER_WIDTH + spine_width) * DPI))
+    if paperback:
+        front_x = int(round((BLEED + COVER_WIDTH + spine_width) * DPI))
+    else:
+        front_x = int(round((BLEED + FLAP_WIDTH + COVER_WIDTH + spine_width) * DPI))
     front_y = int(round(BLEED * DPI))
     front_w = int(round(COVER_WIDTH * DPI))
     front_h = int(round((total_h_inch - 2 * BLEED) * DPI))
@@ -498,6 +523,8 @@ def generate_cover_artifact(
     """Render cover PDF; optionally save locally and/or upload to S3."""
     order_id = payload["order_id"]
     line_item_id = payload["line_item_id"]
+    paperback = is_paperback_format(payload.get("book_format"))
+    cover_suffix = "cover_final" if paperback else "dust_jacket_final"
 
     canvas, front_box = render_cover_canvas(payload, front_background=front_background)
     dpi = front_box["dpi"]
@@ -508,7 +535,7 @@ def generate_cover_artifact(
 
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        local_pdf = os.path.join(output_dir, f"{line_item_id}_dust_jacket_final.pdf")
+        local_pdf = os.path.join(output_dir, f"{line_item_id}_{cover_suffix}.pdf")
         with open(local_pdf, "wb") as f:
             f.write(pdf_bytes)
         payload["local_cover_pdf_path"] = local_pdf
@@ -523,7 +550,8 @@ def generate_cover_artifact(
         print(f"Saved local front cover preview -> {local_jpg}")
 
     if upload_s3 and ARTIFACTS_BUCKET:
-        key = f"book-covers/{order_id}/{line_item_id}_dust_jacket_final.pdf"
+        cover_suffix = "cover_final" if paperback else "dust_jacket_final"
+        key = f"book-covers/{order_id}/{line_item_id}_{cover_suffix}.pdf"
         s3_client.put_object(
             Bucket=ARTIFACTS_BUCKET,
             Key=key,

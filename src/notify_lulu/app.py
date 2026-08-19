@@ -15,6 +15,12 @@ LULU_AUTH_URL = "https://api.lulu.com/auth/realms/glasstree/protocol/openid-conn
 LULU_POD_PACKAGE_ID = os.environ.get(
     "LULU_POD_PACKAGE_ID", "0550X0850.BW.STD.LW.060UC444.MNG"
 )
+LULU_POD_PACKAGE_ID_HARDCOVER = os.environ.get(
+    "LULU_POD_PACKAGE_ID_HARDCOVER", LULU_POD_PACKAGE_ID
+)
+LULU_POD_PACKAGE_ID_PAPERBACK = os.environ.get(
+    "LULU_POD_PACKAGE_ID_PAPERBACK", "0550X0850.BW.STD.PB.060UC444.MXX"
+)
 LULU_CONTACT_EMAIL = os.environ.get("LULU_CONTACT_EMAIL", "orders@luminaryblueprint.com")
 LULU_PRODUCTION_DELAY_MINUTES = int(os.environ.get("LULU_PRODUCTION_DELAY_MINUTES", "60"))
 LULU_PRINT_JOB_MAX_RETRIES = int(os.environ.get("LULU_PRINT_JOB_MAX_RETRIES", "3"))
@@ -121,12 +127,29 @@ def _is_retryable_lulu_status(status_code: int) -> bool:
     return False
 
 
+def resolve_pod_package_id(book_format: str | None) -> str:
+    fmt = (book_format or "hardcover").strip().lower()
+    if fmt == "paperback":
+        return LULU_POD_PACKAGE_ID_PAPERBACK
+    return LULU_POD_PACKAGE_ID_HARDCOVER
+
+
+def is_print_format(book_format: str | None, requires_shipping: bool) -> bool:
+    fmt = (book_format or ("digital" if not requires_shipping else "hardcover")).strip().lower()
+    return fmt in {"hardcover", "paperback"}
+
+
 def build_line_items(processed_books_results, order_id: str) -> list[dict]:
     """Build Lulu line items with fresh presigned URLs (call again on each retry)."""
     line_items = []
     for book_result in processed_books_results:
-        if not book_result.get("requires_shipping", True):
-            print(f"Skipping Lulu for {book_result.get('line_item_id')} (Digital Only)")
+        book_format = book_result.get("book_format")
+        requires_shipping = book_result.get("requires_shipping", True)
+        if not is_print_format(book_format, requires_shipping):
+            print(
+                f"Skipping Lulu for {book_result.get('line_item_id')} "
+                f"(format={book_format or 'digital'})"
+            )
             continue
 
         pdf_s3 = book_result.get("final_pdf_s3_path")
@@ -144,18 +167,23 @@ def build_line_items(processed_books_results, order_id: str) -> list[dict]:
         month = bd.get("month", 1)
         day = bd.get("day", 1)
         foil_title = f"{year}-{month:02d}-{day:02d}"
+        fmt = (book_format or "hardcover").strip().lower()
+        pod_package_id = resolve_pod_package_id(fmt)
+
+        printable = {
+            "pod_package_id": pod_package_id,
+            "cover": {"source_url": create_presigned_url(cover_s3)},
+            "interior": {"source_url": create_presigned_url(pdf_s3)},
+        }
+        if fmt == "hardcover":
+            printable["foil_stamp_title_text"] = foil_title
+            printable["foil_stamp_author_text"] = "LUMINARY BLUEPRINT PUBLISHING"
 
         line_items.append({
             "external_id": book_result.get("line_item_id", order_id),
             "quantity": 1,
             "title": book_result.get("cover_title", "My Book"),
-            "printable_normalization": {
-                "pod_package_id": LULU_POD_PACKAGE_ID,
-                "cover": {"source_url": create_presigned_url(cover_s3)},
-                "interior": {"source_url": create_presigned_url(pdf_s3)},
-                "foil_stamp_title_text": foil_title,
-                "foil_stamp_author_text": "LUMINARY BLUEPRINT PUBLISHING",
-            },
+            "printable_normalization": printable,
         })
     return line_items
 

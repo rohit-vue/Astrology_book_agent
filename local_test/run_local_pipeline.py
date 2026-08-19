@@ -36,6 +36,7 @@ from structured_schemas import (
 )
 from chart_material import (
     enrich_structure_with_chart_snapshots,
+    validate_astrology_artifact,
     validate_book_chart_coverage,
     validate_chapter_input_material_used,
 )
@@ -74,13 +75,13 @@ ASTRO_WESTERN_KEY = os.environ["ASTROLOGY_WESTERN_API_KEY"]
 ASTRO_VEDIC_UID = os.environ["ASTROLOGY_VEDIC_USER_ID"]
 ASTRO_VEDIC_KEY = os.environ["ASTROLOGY_VEDIC_API_KEY"]
 
-MODEL_TEXT = "gpt-5.4-mini-2026-03-17"
+MODEL_TEXT = "gpt-5.6-sol"
 SECTION_WORD_TARGET = 550
 SECTION_WORD_MIN = 500
 SECTION_WORD_MAX = 600
 SECTION_MAX_TOKENS = 2000
 MODEL_IMAGE = "gpt-image-1-mini"
-MODEL_STABLE = "gpt-4o"
+MODEL_STABLE = "gpt-5.6-sol"
 
 OUTPUT_DIR = "/app/output"
 ARTIFACTS_DIR = os.path.join(OUTPUT_DIR, "artifacts")
@@ -92,7 +93,8 @@ IMAGES_DIR = os.path.join(OUTPUT_DIR, "images")
 
 ARCHITECT_SYSTEM_PROMPT = """You are an ASI (Artificial Superintelligence) acting as a master psychological interpreter and book architect.
 Your persona is wise, insightful, and empathetic.
-**CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**."""
+**CRITICAL INSTRUCTION:** You MUST output your response in **__LANGUAGE__**.
+You MUST design the book through the lens of "__FOCUS__"."""
 
 ARCHITECT_USER_PROMPT = """**CRITICAL LANGUAGE REQUIREMENT:**
 The Book Title, Chapter Titles, Themes, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
@@ -208,6 +210,30 @@ __ASTROLOGY_DATA__
 </INPUT_MATERIAL END>
 """
 
+# Mirrors terraform/ssm.tf writer preface/prologue/epilogue (tune independently).
+SECTION_PROMPT_BODY = """Generate narrative prose content for a personal astrology book section.
+Section Type: __SECTION_TYPE__
+Language: __LANGUAGE__
+Style: __STYLE__
+Context: __DESCRIPTION__
+Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
+Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
+Layout Rule: This section must fit on two printed pages. End with a complete sentence.
+Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
+STRICT RULES:
+- Output only body text.
+- No headings or titles.
+- No markdown.
+- No labels.
+- Start directly with prose.
+- Use second person POV."""
+
+SECTION_PROMPT_TEMPLATES = {
+    "preface": SECTION_PROMPT_BODY,
+    "prologue": SECTION_PROMPT_BODY,
+    "epilogue": SECTION_PROMPT_BODY,
+}
+
 STYLE_AUTHORIZED_CHART_KEYS = (
     "WESTERN_HOROSCOPE",
     "PLANETS",
@@ -267,6 +293,8 @@ def fetch_astrology(birth_data, order_id):
             "Data": call_astrology_api(endpoint, auth, payload),
         }
 
+    validate_astrology_artifact(comprehensive_data)
+
     out_path = os.path.join(ARTIFACTS_DIR, "astrology_data.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(comprehensive_data, f, indent=2, ensure_ascii=False)
@@ -284,7 +312,11 @@ def architect_book(astrology_data, focus, language):
     print("STEP 2: Architecting Book Structure")
     print("=" * 60)
 
-    system_prompt = ARCHITECT_SYSTEM_PROMPT.replace("__LANGUAGE__", language)
+    system_prompt = (
+        ARCHITECT_SYSTEM_PROMPT
+        .replace("__LANGUAGE__", language)
+        .replace("__FOCUS__", focus)
+    )
     user_prompt = (
         ARCHITECT_USER_PROMPT
         .replace("__FOCUS__", focus)
@@ -354,17 +386,7 @@ async def generate_section(client, name, description, style, language):
     if not description:
         return ""
     print(f"  Generating {name}...")
-    prompt = f"""
-    Write the {name} for a personal astrology book.
-    Language: {language}
-    Style: {style}
-    Context: {description}
-    **Word Contract:** Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
-    **Length Rule:** Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
-    **Layout Rule:** This section must fit on two printed pages. End with a complete sentence.
-    **Paragraphing:** Plain paragraphs only. Use at most 3-4 paragraph breaks in the whole section.
-    Directive: Write in second person ("You"). Start directly. Plain text only.
-    """
+    prompt = render_section_prompt(name, description, style, language)
     try:
         resp = await client.chat.completions.create(
             model=MODEL_STABLE,

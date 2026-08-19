@@ -384,3 +384,56 @@ def validate_book_chart_coverage(chapters: list, astrology_data: dict | None) ->
         warnings.extend(validate_significant_coverage(chapters, astrology_data))
     warnings.extend(validate_cue_reuse(chapters))
     return warnings
+
+
+# Source-data contract for FetchAstrology. Missing/empty required branches
+# must fail the stage instead of writing a hollow artifact for Architect.
+REQUIRED_CHART_DATA_TYPES = {
+    "WESTERN_HOROSCOPE": dict,
+    "NATAL_TRANSITS": dict,
+    "PLANETS": list,
+    "SHADBALA": list,
+    "BHAVABALA": dict,
+    "VDASHA": dict,
+}
+
+
+def _nonempty_collection(value) -> bool:
+    return isinstance(value, (dict, list)) and len(value) > 0
+
+
+def validate_astrology_artifact(payload: dict) -> None:
+    """Raise ValueError if META or a required CHARTS branch is missing/empty."""
+    if not isinstance(payload, dict):
+        raise ValueError("astrology artifact failed contract: payload is not an object")
+
+    errors: list[str] = []
+    meta = payload.get("META")
+    if not isinstance(meta, dict) or not meta:
+        errors.append("META missing or empty")
+
+    charts = payload.get("CHARTS")
+    if not isinstance(charts, dict):
+        errors.append("CHARTS missing")
+        raise ValueError("astrology artifact failed contract: " + "; ".join(errors))
+
+    for key, expected_type in REQUIRED_CHART_DATA_TYPES.items():
+        block = charts.get(key)
+        data = block.get("Data") if isinstance(block, dict) else None
+        path = f"CHARTS.{key}.Data"
+        if not isinstance(data, expected_type) or len(data) == 0:
+            errors.append(f"{path} missing or empty")
+            continue
+        if key == "WESTERN_HOROSCOPE" and not _nonempty_collection(data.get("planets")):
+            errors.append(f"{path}.planets missing or empty")
+        elif key == "NATAL_TRANSITS" and not _nonempty_collection(data.get("transit_relation")):
+            errors.append(f"{path}.transit_relation missing or empty")
+        elif key == "BHAVABALA":
+            if not (
+                _nonempty_collection(data.get("summary"))
+                or _nonempty_collection(data.get("houses"))
+            ):
+                errors.append(f"{path} missing summary and houses")
+
+    if errors:
+        raise ValueError("astrology artifact failed contract: " + "; ".join(errors))

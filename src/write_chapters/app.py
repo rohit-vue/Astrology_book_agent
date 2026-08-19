@@ -137,10 +137,16 @@ _openai_configured = False
 _chapter_prompt_template_cache: str | None = None
 _image_prompt_template_cache: str | None = None
 _style_prompt_template_cache: str | None = None
+_section_prompt_template_cache: dict[str, str] = {}
 
 CHAPTER_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/chapter"
 IMAGE_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/image"
 STYLE_PROMPT_SSM_NAME = "/AstrologyBookFactory/prompts/writer/style_analysis"
+SECTION_PROMPT_SSM_NAMES = {
+    "preface": "/AstrologyBookFactory/prompts/writer/preface",
+    "prologue": "/AstrologyBookFactory/prompts/writer/prologue",
+    "epilogue": "/AstrologyBookFactory/prompts/writer/epilogue",
+}
 
 
 def get_chapter_prompt_template() -> str:
@@ -180,6 +186,51 @@ def get_style_prompt_template() -> str:
         raise ValueError(f"SSM style prompt parameter is empty: {STYLE_PROMPT_SSM_NAME}")
     _style_prompt_template_cache = value
     return _style_prompt_template_cache
+
+
+def get_section_prompt_template(section_type: str) -> str:
+    key = str(section_type or "").strip().lower()
+    ssm_name = SECTION_PROMPT_SSM_NAMES.get(key)
+    if not ssm_name:
+        raise ValueError(f"unknown section type for SSM prompt: {section_type!r}")
+    cached = _section_prompt_template_cache.get(key)
+    if cached:
+        return cached
+    value = ssm_client.get_parameter(
+        Name=ssm_name, WithDecryption=True
+    )["Parameter"]["Value"].strip()
+    if not value:
+        raise ValueError(f"SSM section prompt parameter is empty: {ssm_name}")
+    _section_prompt_template_cache[key] = value
+    return value
+
+
+def render_section_prompt(
+    template: str,
+    name: str,
+    description: str,
+    style: str,
+    language: str,
+) -> str:
+    replacements = {
+        "__SECTION_TYPE__": name,
+        "__LANGUAGE__": language,
+        "__STYLE__": style,
+        "__DYNAMIC_STYLE__": style,
+        "__DESCRIPTION__": description,
+        "__CONTEXT__": description,
+        "__SECTION_WORD_TARGET__": str(SECTION_WORD_TARGET),
+        "__SECTION_WORD_MIN__": str(SECTION_WORD_MIN),
+        "__SECTION_WORD_MAX__": str(SECTION_WORD_MAX),
+        "__WORD_TARGET__": str(SECTION_WORD_TARGET),
+    }
+    rendered = template
+    for token, value in replacements.items():
+        rendered = rendered.replace(token, value)
+    leftover = sorted(set(re.findall(r"__[A-Z0-9_]+__", rendered)))
+    if leftover:
+        print(f"WARNING: {name} prompt still has unreplaced placeholders: {leftover}")
+    return rendered
 
 
 def build_style_input_material(astrology_data: dict) -> dict:
@@ -580,22 +631,8 @@ async def generate_writing_style(chart: dict, focus: str, language: str) -> str:
 
 
 def _section_batch_prompt(name: str, description: str, style: str, language: str) -> str:
-    return f"""Generate narrative prose content for a personal astrology book section.
-        Section Type: {name}
-        Language: {language}
-        Style: {style}
-        Context: {description}
-        Word Contract: Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
-        Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
-        Layout Rule: This section must fit on two printed pages. End with a complete sentence.
-        Paragraphing: Plain paragraphs only. Use at most 3-4 paragraph breaks.
-        STRICT RULES:
-        - Output only body text.
-        - No headings or titles.
-        - No markdown.
-        - No labels.
-        - Start directly with prose.
-        - Use second person POV."""
+    template = get_section_prompt_template(name)
+    return render_section_prompt(template, name, description, style, language)
 
 
 def build_section_batch_tasks(structure: dict, style: str, language: str):
@@ -652,24 +689,7 @@ def _sections_from_batch_results(merged: dict, section_manifest: dict, sections_
 
 
 async def _generate_section_once(name, description, style, language):
-    prompt = f"""
-    Generate narrative prose content for a personal astrology book section.
-    Section Type: {name}
-    Language: {language}
-    Style: {style}
-    Context: {description}
-    **Word Contract:** Target {SECTION_WORD_TARGET} words. Mandatory range {SECTION_WORD_MIN}-{SECTION_WORD_MAX} words.
-    **Length Rule:** Write until you satisfy the mandatory range, then stop. Do not exceed {SECTION_WORD_MAX} words.
-    **Layout Rule:** This section must fit on two printed pages. End with a complete sentence.
-    **Paragraphing:** Plain paragraphs only. Use at most 3-4 paragraph breaks (double newlines) in the whole section.
-    STRICT RULES:
-    - Output ONLY body text.
-    - No headings or titles.
-    - No markdown.
-    - No labels.
-    - Start directly with prose.
-    - Second person POV ("You").
-    """
+    prompt = _section_batch_prompt(name, description, style, language)
     resp = await async_openai_client.responses.create(
         model=MODEL_CONTENT,
         input=[{"role": "user", "content": prompt}],

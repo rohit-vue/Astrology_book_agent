@@ -80,6 +80,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
           "shipping_code.$" : "$$.Map.Item.Value.shipping_code",
           "focus.$" : "$$.Map.Item.Value.focus",
           "language.$" : "$$.Map.Item.Value.language",
+          "book_format.$" : "$$.Map.Item.Value.book_format",
           "requires_shipping.$" : "$$.Map.Item.Value.requires_shipping"
         },
         Iterator = {
@@ -141,6 +142,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
                 "shipping_code.$" : "$.Payload.shipping_code",
                 "shipping_address.$" : "$.Payload.shipping_address",
                 "customer_details.$" : "$.Payload.customer_details",
+                "book_format.$" : "$.Payload.book_format",
                 "requires_shipping.$" : "$.Payload.requires_shipping"
               },
               ResultPath = "$",
@@ -194,6 +196,7 @@ locals {
     "cover_title.$"            = "$.Payload.cover_title"
     "birth_data.$"             = "$.Payload.birth_data"
     "shipping_code.$"          = "$.Payload.shipping_code"
+    "book_format.$"           = "$.Payload.book_format"
     "requires_shipping.$"      = "$.Payload.requires_shipping"
   }
 }
@@ -226,6 +229,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
           "shipping_code.$"     = "$$.Map.Item.Value.shipping_code",
           "focus.$"             = "$$.Map.Item.Value.focus",
           "language.$"          = "$$.Map.Item.Value.language",
+          "book_format.$"       = "$$.Map.Item.Value.book_format",
           "requires_shipping.$" = "$$.Map.Item.Value.requires_shipping"
         },
         Iterator = {
@@ -504,6 +508,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                 "shipping_code.$"      = "$.Payload.shipping_code",
                 "shipping_address.$"   = "$.Payload.shipping_address",
                 "customer_details.$"   = "$.Payload.customer_details",
+                "book_format.$"        = "$.Payload.book_format",
                 "requires_shipping.$"  = "$.Payload.requires_shipping"
               },
               ResultPath = "$",

@@ -88,6 +88,7 @@ resource "aws_lambda_function" "start_execution" {
 
   filename         = data.archive_file.start_execution_zip.output_path
   source_code_hash = data.archive_file.start_execution_zip.output_base64sha256
+  publish          = true
 
   layers = [
     aws_lambda_layer_version.shared_libraries.arn
@@ -105,8 +106,15 @@ resource "aws_lambda_function" "start_execution" {
   }
 }
 
+resource "aws_lambda_alias" "start_execution_live_factory" {
+  name             = "Live_Factory"
+  description      = "Production StartExecution invoked by SQS"
+  function_name    = aws_lambda_function.start_execution.function_name
+  function_version = aws_lambda_function.start_execution.version
+}
+
 resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   event_source_arn = aws_sqs_queue.book_orders.arn
-  function_name    = "${aws_lambda_function.start_execution.arn}:Live_Factory"
+  function_name    = aws_lambda_alias.start_execution_live_factory.arn
   batch_size       = 5 # Process up to 5 messages at a time
 }
