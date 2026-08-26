@@ -124,11 +124,15 @@ Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 - **Longer medium (9–13 printed lines):** use some of these between the very long blocks so the page is not only mid + giant.
 - Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.
 - Use a blank line between paragraphs.
-Hard rule — no orphan one-liners:
-- Never place a single short line / one-sentence fragment as its own paragraph between longer paragraphs (e.g. one punchy sentence alone between two multi-sentence blocks).
-- If a sentence is for emphasis, keep it inside the preceding or following paragraph (same block, spaces — not a blank-line break).
-- Exception: multi-line breaks are allowed when the content truly needs them — dialogue, a short quoted exchange, a list of spoken lines, or similar conversation/script layout. Those lines may use single newlines within that block.
-- A standalone paragraph must be at least 2–3 full sentences (several printed lines), unless it is part of that dialogue/conversation exception.
+Hard rule — no orphan one-liners (normal prose only):
+- Never place a single short line / one-sentence fragment as its own paragraph between longer narrative paragraphs (e.g. one punchy sentence alone between two multi-sentence blocks).
+- If a sentence is for emphasis inside normal prose, keep it inside the preceding or following paragraph (same block, spaces — not a blank-line break).
+- A standalone narrative paragraph must be at least 2–3 full sentences (several printed lines), unless it is part of an intentional special block below.
+Special multi-line blocks (use when the content needs them — do not suppress):
+- When the chapter needs contrast, use short single-line / multi-line layout for: dialogue or conversation, a short quoted exchange, practical steps, numbered or bulleted lists, exercise prompts, or similar script-like sequences.
+- Use these only when the content truly calls for it (not as decoration every page). A few well-placed blocks add variety; do not turn the whole chapter into a list.
+- Inside those blocks, use **single newlines** between lines/items. Separate the block from surrounding prose with blank lines as needed.
+- Do not flatten a needed conversation, list, or step sequence into one continuous paragraph just to satisfy the orphan rule.
 Very long paragraphs (mandatory count, soft length):
 - Every chapter MUST contain **2 or 3** very long paragraphs — no fewer than **2**, and **never more than 3**.
 - Prefer about **10–14 sentences** and roughly **14–18 printed lines** (one continuous block; spaces between sentences, not blank lines inside it).
