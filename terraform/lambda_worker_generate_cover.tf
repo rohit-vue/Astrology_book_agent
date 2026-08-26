@@ -44,7 +44,7 @@ resource "null_resource" "build_generate_cover_package" {
     cover_art_py_hash = filemd5("${path.module}/../src/generate_cover/cover_art.py")
     reqs_txt_hash     = filemd5("${path.module}/../src/generate_cover/requirements.txt")
     font_files_hash  = md5(join("", [for f in fileset("${path.module}/../src/generate_cover/fonts", "*") : filemd5("${path.module}/../src/generate_cover/fonts/${f}")]))
-    build_recipe_rev = "lulu-cover-dimensions-v1"
+    build_recipe_rev = "lulu-paperback-cover-dimensions-v2"
   }
 
   provisioner "local-exec" {
@@ -69,6 +69,16 @@ resource "aws_s3_object" "generate_cover_package" {
   key    = "lambda-packages/generate_cover_package.zip"
   source = data.archive_file.generate_cover_package.output_path
   etag   = data.archive_file.generate_cover_package.output_md5
+
+  # Multipart S3 ETags (…-N) never match local MD5, so ignore etag drift.
+  # Track package content here so code changes still re-upload the zip.
+  metadata = {
+    package_md5 = data.archive_file.generate_cover_package.output_md5
+  }
+
+  lifecycle {
+    ignore_changes = [etag]
+  }
 }
 
 resource "aws_lambda_function" "generate_cover" {

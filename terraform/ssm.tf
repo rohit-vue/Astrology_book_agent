@@ -33,25 +33,16 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
     - "title": a poetic, publishable chapter heading (what appears in the table of contents). Max 70 characters including spaces.
     - "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
     - "description": a detailed writing brief that expands on the theme for the chapter writer.
-    - "chapter_input_material_used": a JSON object with "chapter_focus" selected from the provided chart data.
-      Do NOT invent chart facts. Copy/condense real factors from the Comprehensive Astrological Data.
-      IMPORTANT: chapter_focus is the ONLY chart material the chapter writer will receive (no chart_snapshot, no full chart dump). Make cues dense and self-sufficient.
-      chapter_focus MUST include:
-      - "rationale": why these cues are primary for this chapter
-      - "western_cues": dense strings from WESTERN_HOROSCOPE. Prefix EVERY cue with "western". Use WESTERN_HOROSCOPE signs/houses only. For planets include name, sign, house, norm_degree, full_degree, is_retro. For aspects include type and orb. For angles include degree when present.
-      - "planets_cues": dense strings from PLANETS. Prefix EVERY cue with "vedic". Include sign, nakshatra, house, awastha, isRetro, normDegree, fullDegree when present. Vedic houses/signs will not match western houses.
-      - "shadbala_cues": array of compact strings from SHADBALA strengths
-      - "bhavabala_cues": array of compact strings from BHAVABALA / house strengths. Prefix EVERY cue with "bhavabala" and the Sanskrit name (Sukha, Putra, Dhana, etc.). Never treat these as western houses.
-      - "vdasha_cues": copy planet + period dates only from VDASHA. Do not add psychological meanings.
-      - "transit_cues": dense strings from NATAL_TRANSITS for today (transit planet, aspect, natal point, signs/houses, retro when available)
-      HOUSE SYSTEM RULE (CRITICAL):
-      Western houses, Vedic PLANETS houses, and Bhavabala houses are different maps. Never merge them (e.g. do not imply western house 4 and bhavabala house 4 Sukha are the same sign).
-      BOOK COVERAGE + UNIQUENESS (CRITICAL):
-      - Coverage: across ALL chapters combined, significant chart factors must appear at least once: every WESTERN planet (including Node, Chiron, Part of Fortune, Lilith if present), Ascendant, Midheaven, every natal aspect with orb <= 2.0, every PLANETS body (including Rahu, Ketu, Ascendant), SHADBALA strongest planet and any not-strong planet, BHAVABALA strongest and weakest houses (use Sanskrit names), the full current VDASHA stack, every outer-planet transit (Jupiter/Saturn/Uranus/Neptune/Pluto) that is present, and any transit to ASC/MC/IC/DC.
-      - Primary home: assign each significant factor to ONE primary chapter (the theme it actually serves).
-      - Reuse: overlap is allowed only for book-level anchors (the current dasha stack, and at most 1-2 signature transits for the day). Other cues must not be copied into more than 2-3 chapters.
-      - Soft caps per family when that family matters: western_cues 6-10, planets_cues 4-8, transit_cues 4-8, shadbala_cues 2-6, bhavabala_cues 2-6, vdasha_cues 2-5.
-      - Empty arrays only when that family truly has nothing relevant. Prefer at least one cue in western_cues.
+    - "chapter_input_material_used": an open JSON object (additionalProperties allowed).
+      CRITICAL — SELECT SOURCE PATHS, DO NOT PASTE FULL CHART TEXT:
+      - Put exact identifiers into "source_paths": an array of dotted paths into the Comprehensive Astrological Data below.
+      - Examples: "CHARTS.WESTERN_HOROSCOPE.Data.planets.0", "CHARTS.PLANETS.Data.3", "CHARTS.VDASHA.Data.major", "CHARTS.BHAVABALA.Data.houses.1", "CHARTS.NATAL_TRANSITS.Data.transit_relation.2".
+      - Python will copy those source records verbatim into the final chapter_input_material_used for the writer.
+      - You MAY also add optional keys (e.g. "notes") for narrative guidance in __LANGUAGE__.
+      - Do NOT invent chart facts. Do NOT paraphrase chart records as a substitute for source_paths.
+      - Prefer several precise paths per chapter over one huge branch.
+      - Western houses, Vedic planet houses, and Bhavabala houses are different maps — select paths from the correct branch; never merge house systems in notes.
+      IMPORTANT: After hydration, chapter_input_material_used is the ONLY chart material the chapter writer will receive.
     "title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
     Good: title="Begin Where Your Nervous System Feels Safe", theme="Inner safety before outer expansion"
     Bad: title="Begin Where Your Nervous System Feels Safe", theme="Begin Where Your Nervous System Feels Safe"
@@ -88,15 +79,12 @@ resource "aws_ssm_parameter" "architect_user_prompt" {
             "theme": "Short conceptual theme distinct from title (in __LANGUAGE__)",
             "description": "A detailed summary (in __LANGUAGE__).",
             "chapter_input_material_used": {
-              "chapter_focus": {
-                "rationale": "Why these chart factors matter for this chapter (in __LANGUAGE__).",
-                "western_cues": ["western Sun Aquarius house 10 norm_degree 6.12 full_degree 306.12 is_retro=false", "western Sun Conjunction Midheaven orb 0.8"],
-                "planets_cues": ["vedic Sun Capricorn nakshatra Shravan house 10 awastha Yuva normDegree 6.12 fullDegree 306.12 isRetro=false"],
-                "shadbala_cues": ["Sun strong 118% of minimum"],
-                "bhavabala_cues": ["bhavabala house 4 Sukha Aries 46% of baseline", "bhavabala house 5 Putra Taurus weakest"],
-                "vdasha_cues": ["Current major Jupiter 22-8-2024 to 23-8-2031"],
-                "transit_cues": ["Transit Uranus Gemini Conjunction natal IC house 4 retro=false"]
-              }
+              "source_paths": [
+                "CHARTS.WESTERN_HOROSCOPE.Data.planets.0",
+                "CHARTS.PLANETS.Data.1",
+                "CHARTS.VDASHA.Data.major"
+              ],
+              "notes": "Optional writer guidance in __LANGUAGE__."
             }
           }
         ]
@@ -117,24 +105,40 @@ resource "aws_ssm_parameter" "writer_chapter_prompt" {
   value       = <<-EOT
 Write Chapter __CHAPTER_NUM__: "__CHAPTER_TITLE__".
 **Language:** __LANGUAGE__
-**Style:** __STYLE__
+**Style (JSON):** __STYLE__
 **Focus:** __FOCUS__
 **Theme:** __CHAPTER_THEME__
 **Summary:** __SUMMARY__
 **Chapter input material used:** __CHAPTER_INPUT_MATERIAL_USED__
-**Chart focus rule:** Ground this chapter ONLY in chapter_input_material_used.chapter_focus. Those dense chart cues are the sole chart material. Do not invent extra chart factors beyond that material.
+**Chart material rule:** Treat chapter_input_material_used as authoritative. Prefer source_records (exact copies from the birth chart artifact selected by path). Use notes / other keys only as writer guidance. Do not invent chart facts beyond that object. Do not merge western, vedic, and bhavabala house systems into one house story.
 **House system rule:** Western houses, Vedic planet houses, and Bhavabala houses are different maps. Translate each family into lived language separately. Do not merge them into one house story (do not write as if house 4 is both Gemini and Aries).
-**Language rule (critical):** Translate chapter_input_material_used.chapter_focus into clear lived language (feelings, patterns, choices, relationships, habits). Do NOT write like a chart reading. Avoid or minimize astrology jargon (planet names, houses, aspects, signs, Midheaven, bhava, natal/transit labels) unless a term is briefly useful; prefer everyday wording.
+**Language rule (critical):** Translate chapter_input_material_used (especially source_records) into clear lived language (feelings, patterns, choices, relationships, habits). Do NOT write like a chart reading. Avoid or minimize astrology jargon (planet names, houses, aspects, signs, Midheaven, bhava, natal/transit labels) unless a term is briefly useful; prefer everyday wording.
 **Word Contract:** Target __WORD_TARGET__ words for this chapter. Mandatory range __CHAPTER_WORD_MIN__-__CHAPTER_WORD_MAX__ words (EXTREMELY IMPORTANT).
 **Length Rule:** Keep writing until you satisfy the mandatory range. Do not stop early.
 **Depth Rule:** Cover (1) core pattern, (2) roots, (3) present-day behavior, (4) relationship dynamics, (5) shadow expression, (6) reframing, (7) practical integration prompts.
 **Formatting:** Plain paragraphs. No bold. No headers.
 **Paragraphing (critical for layout):** Write like a printed book chapter, not chat.
-- **Vary paragraph length deliberately.** Mix shorter paragraphs (often **3-5 sentences**, about **2–3 printed lines**) with medium and longer ones. Do **not** settle into a steady rhythm where every paragraph is the same size.
-- **Short paragraphs are allowed** for emphasis, a turn in thought, or a breath between ideas—use them **sometimes**, not after every sentence.
-- Longer paragraphs are fine when the idea needs room; neighbor paragraphs may be much shorter so the page does not look like uniform blocks.
+- **Vary paragraph length deliberately.** Keep a clear mix of short, medium, and very long paragraphs. Do **not** settle into a steady rhythm where every paragraph is the same size.
+- **Short paragraphs (2–4 printed lines):** for emphasis, a turn in thought, or a breath — use sparingly.
+- **Medium paragraphs (5–8 printed lines):** the majority of the chapter.
+- **Longer medium (9–13 printed lines):** use some of these between the very long blocks so the page is not only mid + giant.
 - Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.
-- Use **double newlines (blank line)** ONLY between **major sections**. **At most 8–10 double-newlines in the whole chapter.**
+- Use a blank line between paragraphs.
+Hard rule — no orphan one-liners:
+- Never place a single short line / one-sentence fragment as its own paragraph between longer paragraphs (e.g. one punchy sentence alone between two multi-sentence blocks).
+- If a sentence is for emphasis, keep it inside the preceding or following paragraph (same block, spaces — not a blank-line break).
+- Exception: multi-line breaks are allowed when the content truly needs them — dialogue, a short quoted exchange, a list of spoken lines, or similar conversation/script layout. Those lines may use single newlines within that block.
+- A standalone paragraph must be at least 2–3 full sentences (several printed lines), unless it is part of that dialogue/conversation exception.
+Very long paragraphs (mandatory count, soft length):
+- Every chapter MUST contain **2 or 3** very long paragraphs — no fewer than **2**, and **never more than 3**.
+- Prefer about **10–14 sentences** and roughly **14–18 printed lines** (one continuous block; spaces between sentences, not blank lines inside it).
+- Prefer the middle of that band (~15–17 lines) when the idea can land there.
+- Thought preservation (critical): stay with one idea until it turns. Do **not** split mid-thought just to hit a line count. If a paragraph runs longer because it is still one continuous argument or story beat, that is allowed.
+- If the block passes ~20 lines because a **second** idea has started, start a new paragraph at that turn — not mid-sentence. Avoid 25+ line walls unless the idea genuinely cannot turn earlier.
+- Place the 2–3 very long blocks in different parts of the chapter (early / middle / late), not all in one stretch.
+- Count cap (critical): if you have written a **4th** very long paragraph, split the extra into medium paragraphs. Four or more very long paragraphs is too many.
+- Count before you finish: confirm you have **exactly 2 or 3** very long paragraphs, then fill the rest with a mix of short + medium + longer-medium. Do not stop at one showcase long paragraph; do not flood the chapter with 4–6 giants.
+- Do not break a long thought into two medium paragraphs just to create white space; keep related sentences together until the idea turns — unless you are past the 3-count cap.
 **Output Rule:** Return only final chapter prose. Do not begin with "Chapter __CHAPTER_NUM__:" or the chapter title. Start directly with body prose; first characters must be narrative text, never a heading.
   EOT
 }
@@ -147,7 +151,7 @@ resource "aws_ssm_parameter" "writer_preface_prompt" {
 Generate narrative prose content for a personal astrology book section.
 Section Type: __SECTION_TYPE__
 Language: __LANGUAGE__
-Style: __STYLE__
+Style (JSON): __STYLE__
 Context: __DESCRIPTION__
 Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
 Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
@@ -171,7 +175,7 @@ resource "aws_ssm_parameter" "writer_prologue_prompt" {
 Generate narrative prose content for a personal astrology book section.
 Section Type: __SECTION_TYPE__
 Language: __LANGUAGE__
-Style: __STYLE__
+Style (JSON): __STYLE__
 Context: __DESCRIPTION__
 Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
 Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
@@ -195,7 +199,7 @@ resource "aws_ssm_parameter" "writer_epilogue_prompt" {
 Generate narrative prose content for a personal astrology book section.
 Section Type: __SECTION_TYPE__
 Language: __LANGUAGE__
-Style: __STYLE__
+Style (JSON): __STYLE__
 Context: __DESCRIPTION__
 Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
 Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
@@ -213,7 +217,7 @@ STRICT RULES:
 
 resource "aws_ssm_parameter" "writer_style_prompt" {
   name        = "/AstrologyBookFactory/prompts/writer/style_analysis"
-  description = "Client style_analysis prompt: 8-field STYLE from authorized chart slices"
+  description = "Client style_analysis prompt: 8-domain emphasize/suppress STYLE from authorized chart slices"
   type        = "SecureString"
   value       = <<-EOT
 TASK
@@ -228,9 +232,18 @@ D=CHARTS.VDASHA.Data:
 
 STYLE RULES
 STYLE must not mention astrology or its technical terms.
+Keep each emphasize / suppress_or_use_sparingly string SHORT and executable (one craft line the chapter writer can follow).
+Hard limit: at most 180 characters per emphasize string and per suppress_or_use_sparingly string.
+Prefer punchy checklist language over long sentences. Do not pack many ideas into one string.
+In suppress_or_use_sparingly, ban repeated stock openers and preachy/clinical/sentimental habits when relevant.
 
 OUTPUT
-STYLE only. Populate every field in the strict JSON schema. Domain semantics:
+STYLE only. Populate every domain in the strict JSON schema.
+Each domain MUST be an object with:
+- emphasize: one short do-this instruction (max 180 chars)
+- suppress_or_use_sparingly: short avoid / use-sparingly bans (max 180 chars)
+
+Domain semantics:
 1 core_voice: CORE VOICE
 2 narrative_cognitive: NARRATIVE/COGNITIVE
 3 temporal_rhythm: TEMPORAL/RHYTHM

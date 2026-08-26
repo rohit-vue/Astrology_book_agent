@@ -30,6 +30,22 @@ API_KEYS_SECRET_ARN = os.environ.get('API_KEYS_SECRET_ARN')
 ASTROLOGY_API_BASE = os.environ.get("ASTROLOGY_API_BASE", "https://json.astrologyapi.com/v1")
 BOOK_FORMATS = frozenset({"hardcover", "paperback", "digital"})
 
+# Shopify variant titles often combine format + focus (e.g. "Hardcover / Personality").
+_FORMAT_FOCUS_ALIASES = frozenset(
+    {
+        "hardcover",
+        "hard cover",
+        "hard_cover",
+        "paperback",
+        "paper back",
+        "paper_back",
+        "digital",
+        "ebook",
+        "e-book",
+        "e book",
+    }
+)
+
 
 def get_selected_state_machine_arn() -> str:
     if USE_STATE_MACHINE_V2 and STATE_MACHINE_ARN_V2:
@@ -232,6 +248,47 @@ def parse_book_format(props: dict, shopify_requires_shipping: bool) -> str:
     return "digital" if not shopify_requires_shipping else "hardcover"
 
 
+def _normalize_format_token(value: str) -> str:
+    return re.sub(r"[\s\-]+", " ", str(value or "").strip().lower())
+
+
+def _is_format_focus_token(value: str) -> bool:
+    normalized = _normalize_format_token(value)
+    if not normalized:
+        return True
+    return normalized in _FORMAT_FOCUS_ALIASES
+
+
+def parse_focus(props: dict, variant_title: str) -> str:
+    """
+    Resolve book theme/focus from line properties or Shopify variant_title.
+
+    Variant titles from multi-option products look like "Hardcover / Personality";
+    book_format is parsed separately — focus must be the theme only.
+    """
+    prop_focus = _first_prop(
+        props,
+        "Focus",
+        "Book Focus",
+        "Theme",
+        "Book Theme",
+        "focus",
+    )
+    if prop_focus:
+        return prop_focus
+
+    raw = str(variant_title or "").strip()
+    if not raw or raw.casefold() == "default title":
+        return "Personality"
+
+    parts = [part.strip() for part in re.split(r"\s*/\s*|\s*\|\s*", raw) if part.strip()]
+    theme_parts = [part for part in parts if not _is_format_focus_token(part)]
+    if theme_parts:
+        return " / ".join(theme_parts)
+
+    return "Personality"
+
+
 def parse_birth_data_with_ai(date_time_str, location_str):
     ensure_openai_api_key()
     prompt = build_data_extraction_prompt(date_time_str, location_str)
@@ -309,7 +366,12 @@ def build_workflow_payload(job_record: dict, payload: dict):
         date_time_str = unstructured_props.get("Delivery Date & Time") or unstructured_props.get("Birthdate and Birth Time")
 
         raw_variant_title = (line_item.get('variant_title') or '').strip()
-        focus = "Personality" if (not raw_variant_title or raw_variant_title.lower() == "default title") else raw_variant_title
+        focus = parse_focus(unstructured_props, raw_variant_title)
+        if focus != raw_variant_title:
+            print(
+                f"Focus normalized for line_item_id={line_item_id}: "
+                f"{raw_variant_title!r} -> {focus!r}"
+            )
 
         shopify_requires_shipping = line_item.get('requires_shipping', True)
         book_format = parse_book_format(unstructured_props, shopify_requires_shipping)

@@ -15,7 +15,7 @@ Env:
   COVER_DYNAMIC_ENABLED   1|0 (default 1)
   COVER_PAYLOAD_JSON      optional full payload JSON path
   PAGE_COUNT              default 220
-  USE_LEGACY_COVER_LAYOUT optional Lulu dimension fallback
+  USE_LEGACY_COVER_LAYOUT optional offline size estimate (paperback refuses this in prod)
 """
 from __future__ import annotations
 

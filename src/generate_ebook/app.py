@@ -33,14 +33,17 @@ def lambda_handler(event, context):
     book.set_title(title)
     book.set_language('en')
 
-    hardcover_front_cover_url = payload.get('hardcover_front_image_url')
-    if hardcover_front_cover_url:
-        cover_data = download_image(hardcover_front_cover_url)
+    front_cover_url = (
+        payload.get("front_cover_image_url")
+        or payload.get("hardcover_front_image_url")
+    )
+    if front_cover_url:
+        cover_data = download_image(front_cover_url)
         if cover_data:
             book.set_cover("cover.jpg", cover_data)
-            print("EPUB cover set from hardcover front image.")
+            print("EPUB cover set from front cover image.")
         else:
-            print("Could not download hardcover front image for EPUB cover.")
+            print("Could not download front cover image for EPUB cover.")
 
     style = '''
         @namespace epub "http://www.idpf.org/2007/ops";

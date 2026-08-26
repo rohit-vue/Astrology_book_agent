@@ -9,10 +9,18 @@ from botocore.config import Config
 from openai import AsyncOpenAI, OpenAI
 from urllib.parse import urlparse
 
-from structured_schemas import (
-    WRITING_STYLE_FIELDS,
-    responses_text_format,
+from chart_material import (
+    chapter_material_preview,
+    prepare_chapter_input_material,
     validate_chapter_input_material_used,
+)
+from structured_schemas import (
+    STYLE_FIELD_MAX_LENGTH,
+    WRITING_STYLE_FIELDS,
+    normalize_writing_style,
+    responses_text_format,
+    style_json_for_writer,
+    validate_writing_style_object,
     writing_style_schema,
 )
 
@@ -47,7 +55,7 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
-MODEL_CONTENT = _env_str("MODEL_CONTENT", "gpt-5.5")
+MODEL_CONTENT = _env_str("MODEL_CONTENT", "gpt-5.6-sol")
 MODEL_IMAGE = _env_str("MODEL_IMAGE", "gpt-image-2")
 BATCH_ENDPOINT_RESPONSES = _env_str("BATCH_ENDPOINT_RESPONSES", "/v1/responses")
 
@@ -60,7 +68,7 @@ TEXT_VERBOSITY_ARCHITECT = _env_str("TEXT_VERBOSITY_ARCHITECT", "high")
 
 REASONING_EFFORT_STYLE = _env_str("REASONING_EFFORT_STYLE", "medium")
 TEXT_VERBOSITY_STYLE = _env_str("TEXT_VERBOSITY_STYLE", "low")
-STYLE_MAX_OUTPUT_TOKENS = _env_int("STYLE_MAX_OUTPUT_TOKENS", 2500)
+STYLE_MAX_OUTPUT_TOKENS = _env_int("STYLE_MAX_OUTPUT_TOKENS", 4000)
 
 # Chart slices the style model is authorized to use (client style_analysis prompt).
 STYLE_AUTHORIZED_CHART_KEYS = (
@@ -71,7 +79,10 @@ STYLE_AUTHORIZED_CHART_KEYS = (
     "VDASHA",
 )
 
-SECTION_MAX_OUTPUT_TOKENS = _env_int("SECTION_MAX_OUTPUT_TOKENS", 4000)
+# Short sections: separate from Architect high reasoning (avoids max_output_tokens burns).
+REASONING_EFFORT_SECTION = _env_str("REASONING_EFFORT_SECTION", "medium")
+TEXT_VERBOSITY_SECTION = _env_str("TEXT_VERBOSITY_SECTION", "medium")
+SECTION_MAX_OUTPUT_TOKENS = _env_int("SECTION_MAX_OUTPUT_TOKENS", 6000)
 SECTION_WORD_TARGET = _env_int("SECTION_WORD_TARGET", 550)
 SECTION_WORD_MIN = _env_int("SECTION_WORD_MIN", 500)
 SECTION_WORD_MAX = _env_int("SECTION_WORD_MAX", 600)
@@ -80,9 +91,9 @@ IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = _env_int("IMAGE_SUMMARY_MAX_OUTPUT_TOKENS", 20
 
 BATCH_POLL_INTERVAL = _env_int("BATCH_POLL_INTERVAL", 15)
 BATCH_MAX_AGE_SECONDS = _env_int("BATCH_MAX_AGE_SECONDS", 84600)
-CHAPTER_WORD_TARGET = _env_int("CHAPTER_WORD_TARGET", 4200)
-CHAPTER_WORD_MIN = _env_int("CHAPTER_WORD_MIN", 600)
-CHAPTER_WORD_MAX = _env_int("CHAPTER_WORD_MAX", 6000)
+CHAPTER_WORD_TARGET = _env_int("CHAPTER_WORD_TARGET", 4000)
+CHAPTER_WORD_MIN = _env_int("CHAPTER_WORD_MIN", 1000)
+CHAPTER_WORD_MAX = _env_int("CHAPTER_WORD_MAX", 5000)
 CJK_MIN_LENGTH_RATIO = _env_float("CJK_MIN_LENGTH_RATIO", 0.62)
 MAX_BATCH_RETRIES = _env_int("MAX_BATCH_RETRIES", 1)
 IMAGE_MIN_BYTES = _env_int("IMAGE_MIN_BYTES", 50000)
@@ -147,6 +158,7 @@ SECTION_PROMPT_SSM_NAMES = {
     "prologue": "/AstrologyBookFactory/prompts/writer/prologue",
     "epilogue": "/AstrologyBookFactory/prompts/writer/epilogue",
 }
+SECTION_DESC_KEYS = ("preface_description", "prologue_description", "epilogue_description")
 
 
 def get_chapter_prompt_template() -> str:
@@ -266,20 +278,6 @@ def render_style_analysis_prompt(
     return rendered
 
 
-def _validate_writing_style_object(style_obj: dict) -> list[str]:
-    errors = []
-    if not isinstance(style_obj, dict):
-        return ["style response is not an object"]
-    for key in WRITING_STYLE_FIELDS:
-        value = str(style_obj.get(key, "") or "").strip()
-        if not value:
-            errors.append(f"style field '{key}' missing or empty")
-    extra = set(style_obj.keys()) - set(WRITING_STYLE_FIELDS)
-    if extra:
-        errors.append(f"unexpected style fields: {sorted(extra)}")
-    return errors
-
-
 def _normalize_chapter_label(value: str) -> str:
     """Normalize title/theme for equality checks (case/punct/whitespace insensitive)."""
     text = str(value or "").casefold().strip()
@@ -304,12 +302,12 @@ def render_chapter_prompt(
     del astrology_data  # focus-only: full chart is not injected into chapter prompts
     theme = str(chapter_theme or "").strip()
     if isinstance(chapter_input_material_used, dict):
-        # Prefer chapter_focus-only payload for the writer.
-        focus_obj = chapter_input_material_used.get("chapter_focus")
-        if isinstance(focus_obj, dict):
-            material_payload = {"chapter_focus": focus_obj}
-        else:
-            material_payload = chapter_input_material_used
+        # Freeform: pass hydrated material (source_paths / source_records / notes).
+        material_payload = {
+            k: v
+            for k, v in chapter_input_material_used.items()
+            if k != "chart_snapshot"
+        }
         notes = json.dumps(material_payload, ensure_ascii=False)
     else:
         notes = str(chapter_input_material_used or "").strip()
@@ -577,25 +575,34 @@ def filter_valid_text_results(
 
 
 def _section_descriptions_from_structure(structure: dict) -> tuple[str, str, str]:
-    struct_inner = structure.get("structure", {})
-    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or (
-        "Write a warm, welcoming preface setting the stage for a journey of self-discovery based on the user's astrology."
-    )
-    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or (
-        "Write an introduction that explains the core themes of the book and invites the reader to explore their inner world."
-    )
-    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or (
-        "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
-    )
-    return preface_desc, prologue_desc, epilogue_desc
+    """
+    Read preface/prologue/epilogue descriptions from Architect output.
+
+    No hardcoded fallbacks — missing descriptions fail hard.
+    """
+    if not isinstance(structure, dict):
+        raise ValueError("structure missing or not an object (no section-description fallbacks)")
+    struct_inner = structure.get("structure") if isinstance(structure.get("structure"), dict) else {}
+    missing = []
+    values = []
+    for key in SECTION_DESC_KEYS:
+        text = str(structure.get(key) or struct_inner.get(key) or "").strip()
+        if not text:
+            missing.append(key)
+        values.append(text)
+    if missing:
+        raise ValueError(
+            "missing section descriptions (no fallbacks): " + ", ".join(missing)
+        )
+    return values[0], values[1], values[2]
 
 
 async def generate_writing_style(chart: dict, focus: str, language: str) -> str:
-    """Build structured 8-field STYLE JSON from SSM style_analysis + authorized charts."""
+    """Build nested emphasize/suppress STYLE JSON from SSM style_analysis + authorized charts."""
     template = get_style_prompt_template()
     prompt = render_style_analysis_prompt(template, focus, language, chart)
     schema = writing_style_schema()
-    print("Generating writing style profile (Responses API, json_schema)...")
+    print("Generating writing style profile (Responses API, json_schema, emphasize/suppress)...")
     style_resp = await async_openai_client.responses.create(
         model=MODEL_CONTENT,
         input=[{"role": "user", "content": prompt}],
@@ -618,14 +625,14 @@ async def generate_writing_style(chart: dict, focus: str, language: str) -> str:
         style_obj = json.loads(raw)
     except json.JSONDecodeError as e:
         raise ValueError(f"style analysis returned invalid JSON: {e}") from e
-    errors = _validate_writing_style_object(style_obj)
+    errors = validate_writing_style_object(style_obj)
     if errors:
         raise ValueError("style analysis validation failed: " + "; ".join(errors))
-    normalized = {key: str(style_obj[key]).strip() for key in WRITING_STYLE_FIELDS}
-    style = json.dumps(normalized, ensure_ascii=False, indent=2)
+    normalized = normalize_writing_style(style_obj)
+    style = style_json_for_writer(normalized)
     print(
         f"Generated writing style profile ({len(style)} chars, "
-        f"{len(WRITING_STYLE_FIELDS)} fields)"
+        f"{len(WRITING_STYLE_FIELDS)} domains, max {STYLE_FIELD_MAX_LENGTH} chars/field)"
     )
     return style
 
@@ -656,9 +663,9 @@ def build_section_batch_tasks(structure: dict, style: str, language: str):
                     "input": [{"role": "user", "content": prompt}],
                     "text": {
                         "format": {"type": "text"},
-                        "verbosity": TEXT_VERBOSITY_ARCHITECT,
+                        "verbosity": TEXT_VERBOSITY_SECTION,
                     },
-                    "reasoning": {"effort": REASONING_EFFORT_ARCHITECT},
+                    "reasoning": {"effort": REASONING_EFFORT_SECTION},
                     "max_output_tokens": SECTION_MAX_OUTPUT_TOKENS,
                 },
             }
@@ -693,8 +700,8 @@ async def _generate_section_once(name, description, style, language):
     resp = await async_openai_client.responses.create(
         model=MODEL_CONTENT,
         input=[{"role": "user", "content": prompt}],
-        text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_ARCHITECT},
-        reasoning={"effort": REASONING_EFFORT_ARCHITECT},
+        text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_SECTION},
+        reasoning={"effort": REASONING_EFFORT_SECTION},
         max_output_tokens=SECTION_MAX_OUTPUT_TOKENS,
     )
     if getattr(resp, "status", None) == "incomplete":
@@ -787,16 +794,19 @@ def build_chapter_batch_tasks(
             )
         if not description:
             raise ValueError(f"chapter {chapter_num} missing description")
-        material_errors = validate_chapter_input_material_used(material, chapter_num)
+        if not isinstance(material, dict):
+            raise ValueError(
+                f"chapter {chapter_num} chapter_input_material_used missing or not an object"
+            )
+        # Re-hydrate so source_records always equal astrology_data at selected paths.
+        material = prepare_chapter_input_material(material, astrology_data)
+        material_errors = validate_chapter_input_material_used(
+            material, chapter_num, astrology_data
+        )
         if material_errors:
             raise ValueError("; ".join(material_errors))
-        # Focus-only: never send chart_snapshot / full chart to the writer.
-        if isinstance(material, dict) and isinstance(material.get("chapter_focus"), dict):
-            material = {"chapter_focus": material["chapter_focus"]}
         custom_id = f"chapter-{chapter_num}"
-        focus_obj = (material or {}).get("chapter_focus") if isinstance(material, dict) else {}
-        rationale = str((focus_obj or {}).get("rationale", "") or "")
-        print(f"Chapter {chapter_num} focus: {rationale[:120]}")
+        print(f"Chapter {chapter_num} material: {chapter_material_preview(material)}")
 
         prompt = render_chapter_prompt(
             chapter_prompt_template,

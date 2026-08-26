@@ -1,12 +1,22 @@
 """Helpers for chapter_input_material_used (local pipelines).
 
-Focus-only mode: Architect fills dense chapter_focus cues; no chart_snapshot.
-Also: house-system labels (hard), book-level coverage and limited reuse (soft warnings).
+Modes (CHAPTER_MATERIAL_MODE env):
+- structured (default): chapter_focus cue arrays + notes; soft chart_coverage checks
+- freeform: open object (additionalProperties true). Architect selects
+  source_paths into astrology_data; Python copies those records into
+  chapter_input_material_used.source_records for the writer (no coverage).
 """
 from __future__ import annotations
 
+import json
+import os
 import re
-from collections import defaultdict
+from copy import deepcopy
+
+from structured_schemas import (
+    CHAPTER_INPUT_MATERIAL_MAX_CHARS,
+    CHAPTER_INPUT_NOTES_MAX_LENGTH,
+)
 
 CUE_FAMILY_KEYS = (
     "western_cues",
@@ -24,56 +34,180 @@ LABELED_FAMILY_PREFIX = {
     "bhavabala_cues": "bhavabala",
 }
 
-TIGHT_ASPECT_ORB = 2.0
-MAX_NON_ANCHOR_REUSE_CHAPTERS = 3
-OUTER_TRANSIT_PLANETS = ("Jupiter", "Saturn", "Uranus", "Neptune", "Pluto")
-ANGLE_TRANSIT_POINTS = ("Ascendant", "ASC", "Midheaven", "MC", "IC", "DC")
-
-_NAME_ALIASES = {
-    "sun": ("sun", "sol"),
-    "moon": ("moon", "luna"),
-    "mercury": ("mercury", "mercurio"),
-    "venus": ("venus",),
-    "mars": ("mars", "marte"),
-    "jupiter": ("jupiter", "júpiter"),
-    "saturn": ("saturn", "saturno"),
-    "uranus": ("uranus", "urano"),
-    "neptune": ("neptune", "neptuno"),
-    "pluto": ("pluto", "plutón", "pluton"),
-    "node": ("node", "nodo"),
-    "chiron": ("chiron", "quirón", "quiron"),
-    "part of fortune": ("part of fortune", "fortune", "pof"),
-    "lilith": ("lilith",),
-    "ascendant": ("ascendant", "ascendente", "asc"),
-    "midheaven": ("midheaven", "medio cielo", "mc"),
-    "rahu": ("rahu",),
-    "ketu": ("ketu",),
-    "ic": ("ic",),
-    "dc": ("dc", "descendant", "descendente"),
-}
+SOURCE_PATH_KEYS = (
+    "source_paths",
+    "source_record_paths",
+    "astrology_source_paths",
+)
 
 
-def normalize_chapters_focus_only(chapters: list) -> None:
-    """Mutate chapters: keep chapter_focus only; drop any chart_snapshot."""
+def chapter_material_mode() -> str:
+    """structured (default) | freeform. FREEFORM_CHAPTER_MATERIAL=1 aliases freeform."""
+    if os.environ.get("FREEFORM_CHAPTER_MATERIAL", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return "freeform"
+    mode = os.environ.get("CHAPTER_MATERIAL_MODE", "structured").strip().lower()
+    if mode in ("freeform", "free", "json_object", "json-object", "paths", "source_paths"):
+        return "freeform"
+    return "structured"
+
+
+def is_freeform_chapter_material() -> bool:
+    return chapter_material_mode() == "freeform"
+
+
+def resolve_astrology_path(root, path: str):
+    """
+    Resolve a dotted / slash path into astrology_data.
+
+    Examples:
+      CHARTS.WESTERN_HOROSCOPE.Data.planets.0
+      CHARTS/PLANETS/Data/3
+      /CHARTS/VDASHA/Data/major
+    """
+    raw = str(path or "").strip()
+    if not raw:
+        raise KeyError("empty source path")
+    if raw.startswith("#"):
+        raw = raw[1:]
+    parts = [p for p in re.split(r"[./]", raw.strip("/")) if p]
+    if not parts:
+        raise KeyError(f"empty source path: {path!r}")
+    cur = root
+    for part in parts:
+        if isinstance(cur, dict):
+            if part in cur:
+                cur = cur[part]
+                continue
+            matched = None
+            for key in cur:
+                if str(key).casefold() == part.casefold():
+                    matched = key
+                    break
+            if matched is None:
+                raise KeyError(f"path not found at {part!r} in {path!r}")
+            cur = cur[matched]
+        elif isinstance(cur, list):
+            try:
+                idx = int(part)
+            except ValueError as exc:
+                raise KeyError(f"list index expected at {part!r} in {path!r}") from exc
+            if idx < 0 or idx >= len(cur):
+                raise KeyError(f"list index out of range at {part!r} in {path!r}")
+            cur = cur[idx]
+        else:
+            raise KeyError(
+                f"cannot traverse into {type(cur).__name__} at {part!r} in {path!r}"
+            )
+    return cur
+
+
+def _extract_source_paths(material: dict) -> list[str]:
+    for key in SOURCE_PATH_KEYS:
+        val = material.get(key)
+        if isinstance(val, list):
+            return [str(p).strip() for p in val if str(p).strip()]
+        if isinstance(val, str) and val.strip():
+            return [val.strip()]
+    return []
+
+
+def hydrate_chapter_input_material(material: dict, astrology_data: dict | None) -> dict:
+    """
+    Copy source records from astrology_data for each source_paths entry.
+
+    Final writer payload keeps architect extras (notes, etc.) and adds:
+      source_records: [{ "path": "...", "record": <copied value> }, ...]
+    Unresolved paths are listed in source_paths_unresolved.
+    """
+    if not isinstance(material, dict):
+        return {}
+    out = {k: deepcopy(v) for k, v in material.items() if k != "chart_snapshot"}
+    out.pop("source_records", None)
+    out.pop("source_paths_unresolved", None)
+
+    paths = _extract_source_paths(out)
+    if not paths or not isinstance(astrology_data, dict):
+        return out
+
+    records = []
+    unresolved = []
+    for path in paths:
+        try:
+            value = resolve_astrology_path(astrology_data, path)
+            records.append({"path": path, "record": deepcopy(value)})
+        except (KeyError, TypeError, ValueError):
+            unresolved.append(path)
+    if records:
+        out["source_records"] = records
+    if unresolved:
+        out["source_paths_unresolved"] = unresolved
+    return out
+
+
+def _prepare_chapter_input_material_structured(material) -> dict:
+    """Normalize writer payload: chapter_focus + notes only (no chart_snapshot)."""
+    if not isinstance(material, dict):
+        material = {}
+    focus = material.get("chapter_focus")
+    if not isinstance(focus, dict):
+        focus = {}
+    notes_raw = material.get("notes")
+    notes = "" if notes_raw is None else str(notes_raw).strip()
+    if len(notes) > CHAPTER_INPUT_NOTES_MAX_LENGTH:
+        notes = notes[:CHAPTER_INPUT_NOTES_MAX_LENGTH]
+    return {"chapter_focus": focus, "notes": notes}
+
+
+def _prepare_chapter_input_material_freeform(
+    material,
+    astrology_data: dict | None = None,
+) -> dict:
+    """Pass through architect blob; hydrate source_paths from astrology_data."""
+    if not isinstance(material, dict):
+        material = {}
+    cleaned = {k: v for k, v in material.items() if k != "chart_snapshot"}
+    return hydrate_chapter_input_material(cleaned, astrology_data)
+
+
+def prepare_chapter_input_material(
+    material,
+    astrology_data: dict | None = None,
+) -> dict:
+    if is_freeform_chapter_material():
+        return _prepare_chapter_input_material_freeform(material, astrology_data)
+    return _prepare_chapter_input_material_structured(material)
+
+
+def normalize_chapters_input_material(
+    chapters: list,
+    astrology_data: dict | None = None,
+) -> None:
+    """Mutate chapters: normalize (+ hydrate freeform paths) for active mode."""
     for chapter in chapters:
         if not isinstance(chapter, dict):
             continue
-        material = chapter.get("chapter_input_material_used")
-        if not isinstance(material, dict):
-            material = {}
-        focus = material.get("chapter_focus")
-        if not isinstance(focus, dict):
-            focus = {}
-        chapter["chapter_input_material_used"] = {"chapter_focus": focus}
+        material = prepare_chapter_input_material(
+            chapter.get("chapter_input_material_used"),
+            astrology_data,
+        )
+        chapter["chapter_input_material_used"] = material
+
+
+def normalize_chapters_focus_only(
+    chapters: list,
+    astrology_data: dict | None = None,
+) -> None:
+    """Backward-compatible alias."""
+    normalize_chapters_input_material(chapters, astrology_data)
 
 
 def normalize_structure_focus_only(structure: dict, astrology_data: dict | None = None) -> dict:
-    """
-    Ensure every chapter's chapter_input_material_used is focus-only.
-
-    astrology_data is unused (kept for call-site compatibility with older enrich).
-    """
-    del astrology_data  # unused in focus-only mode
+    """Normalize every chapter's chapter_input_material_used for the active mode."""
     chapters = []
     if isinstance(structure, dict):
         if isinstance(structure.get("chapters"), list):
@@ -82,7 +216,7 @@ def normalize_structure_focus_only(structure: dict, astrology_data: dict | None 
             inner = structure.get("structure")
             if isinstance(inner, dict) and isinstance(inner.get("chapters"), list):
                 chapters = inner["chapters"]
-    normalize_chapters_focus_only(chapters)
+    normalize_chapters_focus_only(chapters, astrology_data)
     return structure
 
 
@@ -91,7 +225,7 @@ enrich_chapters_with_chart_snapshots = normalize_chapters_focus_only
 enrich_structure_with_chart_snapshots = normalize_structure_focus_only
 
 
-def validate_chapter_input_material_used(material, idx: int) -> list[str]:
+def _validate_chapter_input_material_used_structured(material, idx: int) -> list[str]:
     errors = []
     if not isinstance(material, dict):
         return [f"chapter {idx} chapter_input_material_used missing or not an object"]
@@ -129,261 +263,134 @@ def validate_chapter_input_material_used(material, idx: int) -> list[str]:
     western = focus.get("western_cues")
     if isinstance(western, list) and not any(str(x).strip() for x in western):
         errors.append(f"chapter {idx} chapter_focus.western_cues is empty")
+    if "notes" in material and not isinstance(material.get("notes"), str):
+        errors.append(f"chapter {idx} chapter_input_material_used.notes must be a string")
     return errors
 
 
-def _norm_text(value: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold())).strip()
+def _validate_chapter_input_material_used_freeform(material, idx: int) -> list[str]:
+    errors = []
+    if not isinstance(material, dict):
+        return [f"chapter {idx} chapter_input_material_used missing or not an object"]
+    if not material:
+        errors.append(f"chapter {idx} chapter_input_material_used is empty")
+        return errors
+    paths = _extract_source_paths(material)
+    if not paths:
+        errors.append(
+            f"chapter {idx} chapter_input_material_used.source_paths missing or empty "
+            "(Architect must select exact paths into astrology_data)"
+        )
+    else:
+        records = material.get("source_records")
+        if not isinstance(records, list) or not records:
+            errors.append(
+                f"chapter {idx} chapter_input_material_used.source_records missing or empty "
+                "after hydrate (no paths resolved from astrology_data)"
+            )
+        unresolved = material.get("source_paths_unresolved")
+        if isinstance(unresolved, list) and unresolved:
+            shown = unresolved[:5]
+            suffix = "..." if len(unresolved) > 5 else ""
+            errors.append(
+                f"chapter {idx} unresolved source_paths: {shown}{suffix}"
+            )
+    try:
+        size = len(json.dumps(material, ensure_ascii=False))
+    except (TypeError, ValueError):
+        errors.append(f"chapter {idx} chapter_input_material_used is not JSON-serializable")
+        return errors
+    if size > CHAPTER_INPUT_MATERIAL_MAX_CHARS:
+        errors.append(
+            f"chapter {idx} chapter_input_material_used too large "
+            f"({size} chars; max {CHAPTER_INPUT_MATERIAL_MAX_CHARS})"
+        )
+    return errors
 
 
-def _pad(text: str) -> str:
-    return f" {_norm_text(text)} "
+def validate_chapter_input_material_used(material, idx: int) -> list[str]:
+    if is_freeform_chapter_material():
+        return _validate_chapter_input_material_used_freeform(material, idx)
+    return _validate_chapter_input_material_used_structured(material, idx)
 
 
-def _aliases_for(name: str) -> tuple[str, ...]:
-    key = _norm_text(name)
-    extra = _NAME_ALIASES.get(key, ())
-    aliases = (name, key) + tuple(extra)
-    return tuple(dict.fromkeys(a for a in aliases if str(a).strip()))
-
-
-def _contains_name(blob: str, name: str) -> bool:
-    padded = blob if blob.startswith(" ") else _pad(blob)
-    for alias in _aliases_for(name):
-        token = _norm_text(alias)
-        if token and f" {token} " in padded:
-            return True
-    return False
-
-
-def _iter_chapter_cues(chapters: list):
-    for idx, chapter in enumerate(chapters or [], start=1):
-        if not isinstance(chapter, dict):
-            continue
-        material = chapter.get("chapter_input_material_used") or {}
-        focus = material.get("chapter_focus") if isinstance(material, dict) else {}
-        if not isinstance(focus, dict):
-            continue
-        for family in CUE_FAMILY_KEYS:
-            val = focus.get(family)
-            if not isinstance(val, list):
-                continue
-            for cue in val:
-                text = str(cue or "").strip()
-                if text:
-                    yield idx, family, text
-
-
-def _charts(astrology_data: dict) -> dict:
-    if not isinstance(astrology_data, dict):
-        return {}
-    charts = astrology_data.get("CHARTS") or {}
-    return charts if isinstance(charts, dict) else {}
-
-
-def _western_data(astrology_data: dict) -> dict:
-    block = _charts(astrology_data).get("WESTERN_HOROSCOPE") or {}
-    data = block.get("Data") if isinstance(block, dict) else {}
-    return data if isinstance(data, dict) else {}
-
-
-def build_significant_coverage_requirements(astrology_data: dict) -> list[tuple[str, tuple[str, ...], str | None]]:
-    """
-    Return (label, names_to_match, family_or_none).
-
-    names_to_match: all names must appear in the SAME cue (AND) when len > 1;
-    a 1-tuple may match anywhere in the selected cue pool.
-    family_or_none: limit search to that cue family, or any family if None.
-    """
-    req: list[tuple[str, tuple[str, ...], str | None]] = []
-    western = _western_data(astrology_data)
-    seen_bodies = set()
-    for planet in western.get("planets") or []:
-        if not isinstance(planet, dict):
-            continue
-        name = str(planet.get("name") or "").strip()
-        if not name or name.casefold() in seen_bodies:
-            continue
-        seen_bodies.add(name.casefold())
-        req.append((f"western body {name}", (name,), "western_cues"))
-    lilith = western.get("lilith")
-    if isinstance(lilith, dict) and str(lilith.get("name") or "").strip():
-        req.append(("western body Lilith", ("Lilith",), "western_cues"))
-    req.append(("western Ascendant", ("Ascendant",), "western_cues"))
-    req.append(("western Midheaven", ("Midheaven",), "western_cues"))
-
-    for aspect in western.get("aspects") or []:
-        if not isinstance(aspect, dict):
-            continue
+def chapter_material_preview(material) -> str:
+    """Short log line for architect output."""
+    if is_freeform_chapter_material():
+        if not isinstance(material, dict):
+            return "freeform (invalid)"
+        paths = _extract_source_paths(material)
+        records = material.get("source_records")
+        n_rec = len(records) if isinstance(records, list) else 0
         try:
-            orb = float(aspect.get("orb"))
+            size = len(json.dumps(material, ensure_ascii=False))
         except (TypeError, ValueError):
-            continue
-        if orb > TIGHT_ASPECT_ORB:
-            continue
-        p1 = str(aspect.get("aspecting_planet") or "").strip()
-        p2 = str(aspect.get("aspected_planet") or "").strip()
-        atype = str(aspect.get("type") or "").strip()
-        if not (p1 and p2):
-            continue
-        label = f"tight aspect {p1} {atype or 'aspect'} {p2} (orb {orb})"
-        req.append((label, (p1, p2), "western_cues"))
-
-    planets_block = _charts(astrology_data).get("PLANETS") or {}
-    planets = planets_block.get("Data") if isinstance(planets_block, dict) else planets_block
-    if isinstance(planets, list):
-        for planet in planets:
-            if not isinstance(planet, dict):
-                continue
-            name = str(planet.get("name") or "").strip()
-            if name:
-                req.append((f"vedic body {name}", (name,), "planets_cues"))
-
-    shadbala_block = _charts(astrology_data).get("SHADBALA") or {}
-    shadbala = shadbala_block.get("Data") if isinstance(shadbala_block, dict) else shadbala_block
-    if isinstance(shadbala, list) and shadbala:
-        strongest = None
-        strongest_pct = None
-        for row in shadbala:
-            if not isinstance(row, dict):
-                continue
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            if row.get("is_strong") is False:
-                req.append((f"shadbala not-strong {name}", (name,), "shadbala_cues"))
-            try:
-                pct = float(row.get("strength_percent_of_minimum"))
-            except (TypeError, ValueError):
-                continue
-            if strongest_pct is None or pct > strongest_pct:
-                strongest_pct = pct
-                strongest = name
-        if strongest:
-            req.append((f"shadbala strongest {strongest}", (strongest,), "shadbala_cues"))
-
-    bhavabala_block = _charts(astrology_data).get("BHAVABALA") or {}
-    bhavabala = bhavabala_block.get("Data") if isinstance(bhavabala_block, dict) else {}
-    if isinstance(bhavabala, dict):
-        summary = bhavabala.get("summary") or {}
-        houses = bhavabala.get("houses") or []
-        by_id = {
-            h.get("id"): h
-            for h in houses
-            if isinstance(h, dict) and h.get("id") is not None
-        }
-        for kind, hid in (
-            ("strongest", summary.get("strongest_house_id")),
-            ("weakest", summary.get("weakest_house_id")),
-        ):
-            house = by_id.get(hid)
-            if not isinstance(house, dict):
-                continue
-            sanskrit = str(house.get("name") or "").strip()
-            label = f"bhavabala {kind} house {hid} {sanskrit}".strip()
-            if sanskrit:
-                req.append((label, (sanskrit,), "bhavabala_cues"))
-            else:
-                req.append((label, (f"house {hid}",), "bhavabala_cues"))
-
-    vdasha_block = _charts(astrology_data).get("VDASHA") or {}
-    vdasha = vdasha_block.get("Data") if isinstance(vdasha_block, dict) else {}
-    if isinstance(vdasha, dict):
-        for key in ("major", "minor", "sub_minor", "sub_sub_minor", "sub_sub_sub_minor"):
-            row = vdasha.get(key) or {}
-            if not isinstance(row, dict):
-                continue
-            planet = str(row.get("planet") or "").strip()
-            if planet:
-                req.append((f"vdasha {key} {planet}", (planet,), "vdasha_cues"))
-
-    transits_block = _charts(astrology_data).get("NATAL_TRANSITS") or {}
-    transits = transits_block.get("Data") if isinstance(transits_block, dict) else {}
-    relations = (transits.get("transit_relation") or []) if isinstance(transits, dict) else []
-    seen_outers = set()
-    seen_angles = set()
-    for rel in relations:
-        if not isinstance(rel, dict):
-            continue
-        tplanet = str(rel.get("transit_planet") or "").strip()
-        if tplanet in OUTER_TRANSIT_PLANETS and tplanet.casefold() not in seen_outers:
-            seen_outers.add(tplanet.casefold())
-            req.append((f"outer transit {tplanet}", (tplanet,), "transit_cues"))
-        nplanet = str(rel.get("natal_planet") or "").strip()
-        if nplanet in ANGLE_TRANSIT_POINTS and nplanet.casefold() not in seen_angles:
-            seen_angles.add(nplanet.casefold())
-            req.append((f"angle transit to {nplanet}", (nplanet,), "transit_cues"))
-    return req
+            size = 0
+        return f"freeform paths={len(paths)} hydrated={n_rec} (~{size} chars)"
+    material = prepare_chapter_input_material(material)
+    focus = material.get("chapter_focus") or {}
+    rationale = str(focus.get("rationale", "") or "")
+    notes = str(material.get("notes", "") or "")
+    parts = [f"focus: {rationale[:80]}"]
+    if notes:
+        parts.append(f"notes: {notes[:60]}...")
+    return " | ".join(parts)
 
 
-def _requirement_met(cues: list[str], names: tuple[str, ...]) -> bool:
-    if len(names) == 1:
-        blob = _pad(" ".join(cues))
-        return _contains_name(blob, names[0])
-    for cue in cues:
-        padded = _pad(cue)
-        if all(_contains_name(padded, name) for name in names):
-            return True
-    return False
+def writer_chart_material_rule() -> str:
+    if is_freeform_chapter_material():
+        return (
+            "**Chart material rule:** Treat chapter_input_material_used as authoritative. "
+            "Prefer source_records (exact copies from the birth chart artifact selected by "
+            "path). Use notes / other keys only as writer guidance. Do not invent chart "
+            "facts beyond that object. Do not merge western, vedic, and bhavabala house "
+            "systems into one house story."
+        )
+    return (
+        "**Chart focus rule:** Ground this chapter in "
+        "chapter_input_material_used.chapter_focus (dense chart cues). "
+        "Use chapter_input_material_used.notes for additional architect guidance "
+        "(narrative angle, emphasis, craft direction). Do not invent chart factors "
+        "beyond chapter_focus."
+    )
+
+
+def build_significant_coverage_requirements(astrology_data: dict) -> list | None:
+    """Structured mode: real requirements from chart_coverage. Freeform: None."""
+    if is_freeform_chapter_material():
+        return None
+    from chart_coverage import (
+        build_significant_coverage_requirements as _build,
+    )
+
+    return _build(astrology_data)
 
 
 def validate_significant_coverage(chapters: list, astrology_data: dict) -> list[str]:
-    """Significant chart factors must appear at least once across all chapter cues."""
-    if not astrology_data:
+    """Structured mode only — freeform has no chapter_focus cue families."""
+    if is_freeform_chapter_material():
         return []
-    by_family: dict[str, list[str]] = defaultdict(list)
-    all_cues: list[str] = []
-    for _idx, family, text in _iter_chapter_cues(chapters):
-        by_family[family].append(text)
-        all_cues.append(text)
-    errors = []
-    for label, names, family in build_significant_coverage_requirements(astrology_data):
-        pool = by_family.get(family, []) if family else all_cues
-        if not _requirement_met(pool, names):
-            errors.append(f"book coverage missing {label}")
-    return errors
+    from chart_coverage import validate_significant_coverage as _validate
+
+    return _validate(chapters, astrology_data)
 
 
-def _normalize_cue_for_reuse(text: str) -> str:
-    t = _norm_text(text)
-    for prefix in ("western", "vedic", "bhavabala"):
-        if t.startswith(prefix + " "):
-            t = t[len(prefix) + 1 :]
-            break
-    return t.strip()
+def validate_cue_reuse(chapters: list, max_chapters: int = 3) -> list[str]:
+    """Structured mode only — freeform has no chapter_focus cue families."""
+    if is_freeform_chapter_material():
+        return []
+    from chart_coverage import validate_cue_reuse as _validate
 
-
-def validate_cue_reuse(
-    chapters: list,
-    max_chapters: int = MAX_NON_ANCHOR_REUSE_CHAPTERS,
-) -> list[str]:
-    """Non-dasha cues may repeat in at most max_chapters chapters."""
-    by_cue: dict[str, set[int]] = defaultdict(set)
-    for idx, family, text in _iter_chapter_cues(chapters):
-        if family == "vdasha_cues":
-            continue
-        key = _normalize_cue_for_reuse(text)
-        if key:
-            by_cue[key].add(idx)
-    errors = []
-    for key, chapter_ids in sorted(by_cue.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        if len(chapter_ids) > max_chapters:
-            shown = key[:90]
-            chapters_s = ",".join(str(i) for i in sorted(chapter_ids))
-            errors.append(
-                f"non-anchor cue reused in {len(chapter_ids)} chapters "
-                f"(max {max_chapters}): {shown!r} (chapters {chapters_s})"
-            )
-    return errors
+    return _validate(chapters, max_chapters=max_chapters)
 
 
 def validate_book_chart_coverage(chapters: list, astrology_data: dict | None) -> list[str]:
-    """Soft coverage + uniqueness warnings. Never block book generation."""
-    warnings: list[str] = []
-    if astrology_data:
-        warnings.extend(validate_significant_coverage(chapters, astrology_data))
-    warnings.extend(validate_cue_reuse(chapters))
-    return warnings
+    """Soft coverage + reuse warnings in structured mode; no-op for freeform."""
+    if is_freeform_chapter_material():
+        return []
+    from chart_coverage import validate_book_chart_coverage as _validate
+
+    return _validate(chapters, astrology_data)
 
 
 # Source-data contract for FetchAstrology. Missing/empty required branches

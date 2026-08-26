@@ -6,12 +6,17 @@ from botocore.config import Config
 from openai import OpenAI
 from urllib.parse import urlparse
 
-from chart_coverage import validate_book_chart_coverage
+from chart_material import (
+    chapter_material_preview,
+    enrich_structure_with_chart_snapshots,
+    validate_book_chart_coverage,
+    validate_chapter_input_material_used,
+)
 from structured_schemas import (
     CHAPTER_TITLE_MAX_LENGTH,
     book_structure_schema,
+    book_structure_schema_strict,
     responses_text_format,
-    validate_chapter_input_material_used,
 )
 
 
@@ -36,7 +41,7 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
-MODEL_ID = _env_str("MODEL_ARCHITECT", "gpt-5.5")
+MODEL_ID = _env_str("MODEL_ARCHITECT", "gpt-5.6-sol")
 REASONING_EFFORT_ARCHITECT = _env_str("REASONING_EFFORT_ARCHITECT", "high")
 TEXT_VERBOSITY_ARCHITECT = _env_str("TEXT_VERBOSITY_ARCHITECT", "high")
 ARCHITECT_MAX_OUTPUT_TOKENS = _env_int("ARCHITECT_MAX_OUTPUT_TOKENS", 24000)
@@ -139,7 +144,10 @@ def _normalize_chapter_label(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
+def validate_book_structure(
+    data: dict,
+    astrology_data: dict | None = None,
+) -> tuple[bool, list[str]]:
     errors: list[str] = []
     if not isinstance(data, dict):
         return False, ["root is not a JSON object"]
@@ -194,7 +202,9 @@ def validate_book_structure(data: dict) -> tuple[bool, list[str]]:
             errors.append(f"chapter {idx} theme missing or empty")
         if not description:
             errors.append(f"chapter {idx} description missing or empty")
-        errors.extend(validate_chapter_input_material_used(material, idx))
+        errors.extend(
+            validate_chapter_input_material_used(material, idx, astrology_data)
+        )
         if title and theme and _normalize_chapter_label(title) == _normalize_chapter_label(theme):
             errors.append(
                 f"chapter {idx} theme must differ from title "
@@ -233,15 +243,15 @@ def get_prompts_from_ssm(astrology_data: dict, focus: str, language: str, qanda:
     return system_prompt, user_prompt
 
 
-def _log_cue_coverage_warnings(chapters: list, astrology_data: dict | None) -> None:
-    """Coverage/reuse are quality warnings only; they must not fail the book."""
+def _log_coverage_status(chapters: list, astrology_data: dict | None) -> None:
+    """Coverage retired for freeform; keep a clear log line for CloudWatch."""
     warnings = validate_book_chart_coverage(chapters, astrology_data)
     if warnings:
-        print(f"WARNING: cue coverage/reuse ({len(warnings)}):")
+        print(f"WARNING: chart coverage ({len(warnings)}):")
         for item in warnings:
             print(f"  - {item}")
     else:
-        print("Cue coverage + reuse checks passed.")
+        print("Chart coverage checks disabled (freeform source_paths).")
 
 
 def architect_book_structure(
@@ -254,6 +264,7 @@ def architect_book_structure(
 
     for attempt in range(1, max_attempts + 1):
         print(f"Calling OpenAI to architect book structure (attempt {attempt}/{max_attempts})...")
+        print("chapter_input_material_used mode: freeform")
         response = openai_client.responses.create(
             model=MODEL_ID,
             input=[
@@ -264,6 +275,7 @@ def architect_book_structure(
                 "book_structure",
                 book_structure_schema(ARCHITECT_MIN_CHAPTERS, ARCHITECT_MAX_CHAPTERS),
                 verbosity=TEXT_VERBOSITY_ARCHITECT,
+                strict=book_structure_schema_strict(),
             ),
             reasoning={"effort": REASONING_EFFORT_ARCHITECT},
             max_output_tokens=ARCHITECT_MAX_OUTPUT_TOKENS,
@@ -288,21 +300,24 @@ def architect_book_structure(
             print(f"VALIDATION FAIL attempt {attempt}: {last_errors[0]}")
             continue
 
-        ok, errors = validate_book_structure(full_structure)
+        # Freeform: hydrate source_paths → source_records before validation.
+        full_structure = enrich_structure_with_chart_snapshots(
+            full_structure, astrology_data
+        )
+        ok, errors = validate_book_structure(full_structure, astrology_data)
         if ok:
             chapters = _chapters_from_structure(full_structure)
             print(f"Generated valid structure with {len(chapters)} chapters.")
             for i, ch in enumerate(chapters, start=1):
                 title = str(ch.get("title", "") or "")
                 material = ch.get("chapter_input_material_used") or {}
-                focus = (material.get("chapter_focus") or {}) if isinstance(material, dict) else {}
-                rationale = str(focus.get("rationale", "") or "")
+                preview = chapter_material_preview(material)
                 print(
                     f"  Chapter {i}: {title} ({len(title)} chars) | "
                     f"theme: {ch.get('theme', '')} | "
-                    f"focus: {rationale[:80]}"
+                    f"{preview}"
                 )
-            _log_cue_coverage_warnings(chapters, astrology_data)
+            _log_coverage_status(chapters, astrology_data)
             return full_structure
 
         last_errors = errors

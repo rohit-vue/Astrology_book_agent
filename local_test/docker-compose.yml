@@ -11,6 +11,7 @@ services:
       - ./run_local_pipeline.py:/app/run_local_pipeline.py:ro
       - ./structured_schemas.py:/app/structured_schemas.py:ro
       - ./chart_material.py:/app/chart_material.py:ro
+      - ./chart_coverage.py:/app/chart_coverage.py:ro
       - ./pipeline_config.json:/app/pipeline_config.json:ro
       - ./.env:/app/.env:ro
       - ./output:/app/output
@@ -22,12 +23,18 @@ services:
       dockerfile: Dockerfile
     environment:
       - LAMBDA_TASK_ROOT=/app/generate_pdf
+      # Default: structured chapter_focus+notes (+ chart_coverage soft checks).
+      # Client path-hydrate experiment:
+      #   CHAPTER_MATERIAL_MODE=freeform
+      #   (or FREEFORM_CHAPTER_MATERIAL=1)
+      # Architect selects source_paths; Python copies records from astrology_data.
     volumes:
       - ../src/generate_pdf:/app/generate_pdf:ro
       - ./book_pdf_exporter_local.py:/app/generate_pdf/book_pdf_exporter.py:ro
       - ./run_local_batch_pipeline.py:/app/run_local_batch_pipeline.py:ro
       - ./structured_schemas.py:/app/structured_schemas.py:ro
       - ./chart_material.py:/app/chart_material.py:ro
+      - ./chart_coverage.py:/app/chart_coverage.py:ro
       - ./pipeline_config.json:/app/pipeline_config.json:ro
       - ./.env:/app/.env:ro
       - ./output:/app/output
@@ -43,6 +50,7 @@ services:
       - ./run_local_batch_pipeline.py:/app/run_local_batch_pipeline.py:ro
       - ./structured_schemas.py:/app/structured_schemas.py:ro
       - ./chart_material.py:/app/chart_material.py:ro
+      - ./chart_coverage.py:/app/chart_coverage.py:ro
       - ./run_local_batch_images_from_artifacts.py:/app/run_local_batch_images_from_artifacts.py:ro
       - ./.env:/app/.env:ro
       - ./output:/app/output

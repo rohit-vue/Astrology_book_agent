@@ -18,9 +18,24 @@ lambda_package/
 # Generated Content 
 generated_books/
 generated_images/
-local_test/output/
-local_test/.env
 
+# Local test: secrets, run outputs, and one-off harness scripts
+local_test/.env
+local_test/output/
+local_test/output*/
+local_test/__pycache__/
+local_test/regen_epilogue.py
+local_test/resume_text_batch.py
+local_test/start_deploy_test_execution.py
+local_test/test_sections_only.py
+local_test/test_chapters_paragraphs.py
+local_test/test_gpt_54_mini.py
+local_test/dry_run_write_chapters.py
+local_test/debug_lulu_files.py
+local_test/run_pdf_from_artifacts.py
+local_test/run_pdf_paragraph_smoke.py
+local_test/export_paragraph_smoke_md.py
+local_test/make_paragraph_smoke_pdf.py
 
 # Terraform State & Cache
 .terraform/

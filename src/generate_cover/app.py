@@ -24,11 +24,32 @@ LULU_POD_PACKAGE_ID_PAPERBACK = os.environ.get(
 )
 TEXT_WRAP_WIDTH_RATIO = 0.85
 FRONT_COVER_PREVIEW_WIDTH = 1024
-# Match Lulu front panel aspect (5.895" x 9") so preview JPG has no letterboxing.
-FRONT_COVER_PREVIEW_SIZE = (
-    FRONT_COVER_PREVIEW_WIDTH,
-    int(round(FRONT_COVER_PREVIEW_WIDTH * (9.0 / 5.895))),
-)
+
+# Lulu 5.5x8.5 wrap / perfect-bound layout constants (inches).
+HARDCOVER_PANEL_WIDTH = 5.895
+HARDCOVER_PANEL_HEIGHT = 9.0
+HARDCOVER_FLAP_WIDTH = 3.5
+PAPERBACK_TRIM_WIDTH = 5.5
+PAPERBACK_TRIM_HEIGHT = 8.5
+COVER_BLEED = 0.125
+# Matches POD paper bulk ...060UC444... / ...060UW444... (pages per inch).
+COVER_PAGE_PPI = 444.0
+
+
+def front_cover_preview_size(*, paperback: bool = False) -> tuple[int, int]:
+    """Preview JPG size matching front-panel aspect (no letterboxing)."""
+    if paperback:
+        panel_w, panel_h = PAPERBACK_TRIM_WIDTH, PAPERBACK_TRIM_HEIGHT
+    else:
+        panel_w, panel_h = HARDCOVER_PANEL_WIDTH, HARDCOVER_PANEL_HEIGHT
+    return (
+        FRONT_COVER_PREVIEW_WIDTH,
+        int(round(FRONT_COVER_PREVIEW_WIDTH * (panel_h / panel_w))),
+    )
+
+
+# Backward-compatible default (hardcover panel aspect).
+FRONT_COVER_PREVIEW_SIZE = front_cover_preview_size(paperback=False)
 
 
 def resolve_language_key(language: str) -> str:
@@ -120,9 +141,13 @@ def wrap_text(
 
 def resize_front_cover_preview(
     image: Image.Image,
-    target_size: tuple[int, int] = FRONT_COVER_PREVIEW_SIZE,
+    target_size: tuple[int, int] | None = None,
+    *,
+    paperback: bool = False,
 ) -> Image.Image:
     """Crop/scale to fill target_size (no letterboxing)."""
+    if target_size is None:
+        target_size = front_cover_preview_size(paperback=paperback)
     tw, th = target_size
     return fit_image_cover_crop(image, tw, th)
 
@@ -324,17 +349,52 @@ def is_paperback_format(book_format: str | None) -> bool:
     return (book_format or "").strip().lower() == "paperback"
 
 
-def _legacy_cover_size_inches(page_count: int, paperback: bool = False) -> Tuple[float, float, float]:
-    """Previous approximation (spine heuristic) — used only if Lulu API fails."""
-    PAGE_MULTIPLIER = 0.002252
-    COVER_WIDTH = 5.895
-    COVER_HEIGHT = 9.0
-    FLAP_WIDTH = 0.0 if paperback else 3.5
-    BLEED = 0.125
-    spine_width = page_count * PAGE_MULTIPLIER
-    total_w = (BLEED * 2) + (FLAP_WIDTH * 2) + (COVER_WIDTH * 2) + spine_width
-    total_h = (BLEED * 2) + COVER_HEIGHT
-    return total_w, total_h, spine_width
+def _spine_width_inches(page_count: int) -> float:
+    return max(float(page_count) / COVER_PAGE_PPI, 0.0)
+
+
+def _legacy_cover_size_inches(
+    page_count: int, paperback: bool = False
+) -> Tuple[float, float, float, float]:
+    """Offline approximation — hardcover only in production fallbacks.
+
+    Returns (total_w, total_h, spine_width, panel_width).
+    Paperback values use trim 5.5x8.5 (not hardcover wrap panels).
+    """
+    spine_width = _spine_width_inches(page_count)
+    if paperback:
+        panel_width = PAPERBACK_TRIM_WIDTH
+        panel_height = PAPERBACK_TRIM_HEIGHT
+        flap_width = 0.0
+    else:
+        panel_width = HARDCOVER_PANEL_WIDTH
+        panel_height = HARDCOVER_PANEL_HEIGHT
+        flap_width = HARDCOVER_FLAP_WIDTH
+    total_w = (COVER_BLEED * 2) + (flap_width * 2) + (panel_width * 2) + spine_width
+    total_h = (COVER_BLEED * 2) + panel_height
+    return total_w, total_h, spine_width, panel_width
+
+
+def _layout_from_lulu_dimensions(
+    total_w: float, total_h: float, page_count: int, paperback: bool
+) -> Tuple[float, float, float, float]:
+    """Derive spine + front/back panel width from Lulu full-spread size."""
+    spine_width = _spine_width_inches(page_count)
+    if paperback:
+        flap_width = 0.0
+        panel_width = (total_w - (COVER_BLEED * 2) - spine_width) / 2.0
+    else:
+        flap_width = HARDCOVER_FLAP_WIDTH
+        panel_width = HARDCOVER_PANEL_WIDTH
+        spine_width = total_w - (
+            (COVER_BLEED * 2) + (flap_width * 2) + (panel_width * 2)
+        )
+    if panel_width <= 0 or spine_width < 0:
+        raise ValueError(
+            f"Invalid cover layout from Lulu size {total_w}\" x {total_h}\" "
+            f"(panel={panel_width}, spine={spine_width}, paperback={paperback})"
+        )
+    return total_w, total_h, spine_width, panel_width
 
 
 def _get_lulu_api_keys() -> tuple[str | None, str | None]:
@@ -431,13 +491,23 @@ def fit_image_cover_crop(
 
 def resolve_cover_layout_inches(
     page_count: int, pod_package_id: str, paperback: bool = False
-) -> Tuple[float, float, float]:
-    COVER_WIDTH = 5.895
-    FLAP_WIDTH = 0.0 if paperback else 3.5
-    BLEED = 0.125
-    fixed_band = (BLEED * 2) + (FLAP_WIDTH * 2) + (COVER_WIDTH * 2)
+) -> Tuple[float, float, float, float]:
+    """Resolve full-spread cover size and panel geometry.
 
-    if os.environ.get("USE_LEGACY_COVER_LAYOUT", "").strip().lower() in ("1", "true", "yes"):
+    Returns (total_w, total_h, spine_width, panel_width) in inches.
+    Paperback always uses Lulu /cover-dimensions/ (no hardcover-style fallback).
+    """
+    use_legacy = os.environ.get("USE_LEGACY_COVER_LAYOUT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if use_legacy:
+        if paperback:
+            print(
+                "WARNING: USE_LEGACY_COVER_LAYOUT set; using paperback trim estimate "
+                "(not for production print jobs)."
+            )
         return _legacy_cover_size_inches(page_count, paperback=paperback)
 
     try:
@@ -445,22 +515,34 @@ def resolve_cover_layout_inches(
         if not client_key or not client_secret:
             raise ValueError("Lulu API credentials not configured")
         token = get_lulu_token(client_key, client_secret)
-        total_w, total_h = fetch_lulu_cover_dimensions_inches(token, pod_package_id, page_count)
-        spine_width = total_w - fixed_band
-        if spine_width <= 0:
-            raise ValueError(f"Invalid spine width from Lulu dimensions: {total_w}")
-        print(f"Lulu cover dimensions: {total_w:.4f}\" x {total_h:.4f}\", spine {spine_width:.4f}\"")
-        return total_w, total_h, spine_width
+        total_w, total_h = fetch_lulu_cover_dimensions_inches(
+            token, pod_package_id, page_count
+        )
+        total_w, total_h, spine_width, panel_width = _layout_from_lulu_dimensions(
+            total_w, total_h, page_count, paperback=paperback
+        )
+        print(
+            f"Lulu cover dimensions: {total_w:.4f}\" x {total_h:.4f}\", "
+            f"spine {spine_width:.4f}\", panel {panel_width:.4f}\" "
+            f"(pod={pod_package_id}, paperback={paperback})"
+        )
+        return total_w, total_h, spine_width, panel_width
     except Exception as e:
-        print(f"Lulu cover-dimensions unavailable ({e}); using legacy spine estimate.")
-        return _legacy_cover_size_inches(page_count, paperback=paperback)
+        if paperback:
+            # Oversized hardcover-style legacy covers are rejected by Lulu for PB.
+            raise RuntimeError(
+                f"Lulu cover-dimensions required for paperback (pod={pod_package_id}, "
+                f"pages={page_count}); refusing legacy fallback: {e}"
+            ) from e
+        print(f"Lulu cover-dimensions unavailable ({e}); using legacy hardcover estimate.")
+        return _legacy_cover_size_inches(page_count, paperback=False)
 
 
 def render_cover_canvas(
     payload: dict,
     front_background: Image.Image | None = None,
 ) -> tuple[Image.Image, dict]:
-    """Build full dust-jacket image plus front-panel crop box (x, y, w, h) in pixels."""
+    """Build full cover/dust-jacket image plus front-panel crop box (x, y, w, h) in pixels."""
     page_count = int(payload["page_count"])
     language = payload.get("language", "English")
     book_format = payload.get("book_format", "hardcover")
@@ -468,23 +550,18 @@ def render_cover_canvas(
     pod_package_id = resolve_pod_package_id(book_format)
 
     DPI = 300
-    COVER_WIDTH = 5.895
-    FLAP_WIDTH = 0.0 if paperback else 3.5
-    BLEED = 0.125
+    flap_width = 0.0 if paperback else HARDCOVER_FLAP_WIDTH
 
-    total_w_inch, total_h_inch, spine_width = resolve_cover_layout_inches(
+    total_w_inch, total_h_inch, spine_width, panel_width = resolve_cover_layout_inches(
         page_count, pod_package_id, paperback=paperback
     )
 
     w_px = int(round(total_w_inch * DPI))
     h_px = int(round(total_h_inch * DPI))
-    if paperback:
-        front_x = int(round((BLEED + COVER_WIDTH + spine_width) * DPI))
-    else:
-        front_x = int(round((BLEED + FLAP_WIDTH + COVER_WIDTH + spine_width) * DPI))
-    front_y = int(round(BLEED * DPI))
-    front_w = int(round(COVER_WIDTH * DPI))
-    front_h = int(round((total_h_inch - 2 * BLEED) * DPI))
+    front_x = int(round((COVER_BLEED + flap_width + panel_width + spine_width) * DPI))
+    front_y = int(round(COVER_BLEED * DPI))
+    front_w = int(round(panel_width * DPI))
+    front_h = int(round((total_h_inch - 2 * COVER_BLEED) * DPI))
 
     if front_background is not None:
         canvas = fit_image_cover_crop(
@@ -543,7 +620,7 @@ def generate_cover_artifact(
 
         fx, fy, fw, fh = front_box["x"], front_box["y"], front_box["w"], front_box["h"]
         front_cover = canvas.crop((fx, fy, fx + fw, fy + fh))
-        front_cover = resize_front_cover_preview(front_cover)
+        front_cover = resize_front_cover_preview(front_cover, paperback=paperback)
         local_jpg = os.path.join(output_dir, f"{line_item_id}_front_cover.jpg")
         front_cover.save(local_jpg, format="JPEG", quality=95)
         payload["local_front_cover_jpg"] = local_jpg
@@ -562,7 +639,7 @@ def generate_cover_artifact(
 
         fx, fy, fw, fh = front_box["x"], front_box["y"], front_box["w"], front_box["h"]
         front_cover = canvas.crop((fx, fy, fx + fw, fy + fh))
-        front_cover = resize_front_cover_preview(front_cover)
+        front_cover = resize_front_cover_preview(front_cover, paperback=paperback)
         front_buffer = io.BytesIO()
         front_cover.save(front_buffer, format="JPEG", quality=95)
         front_buffer.seek(0)
@@ -573,7 +650,10 @@ def generate_cover_artifact(
             Body=front_buffer,
             ContentType="image/jpeg",
         )
-        payload["hardcover_front_image_url"] = f"https://{ARTIFACTS_BUCKET}.s3.amazonaws.com/{front_key}"
+        front_url = f"https://{ARTIFACTS_BUCKET}.s3.amazonaws.com/{front_key}"
+        payload["front_cover_image_url"] = front_url
+        # Backward-compatible alias for older ebook / consumers.
+        payload["hardcover_front_image_url"] = front_url
 
     return payload
 

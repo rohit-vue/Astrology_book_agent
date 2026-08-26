@@ -36,6 +36,10 @@ data "archive_file" "write_chapters_code" {
     content  = file("${path.module}/../src/shared/structured_schemas.py")
     filename = "structured_schemas.py"
   }
+  source {
+    content  = file("${path.module}/../src/shared/chart_material.py")
+    filename = "chart_material.py"
+  }
 }
 
 resource "aws_lambda_function" "write_chapters" {
@@ -60,8 +64,8 @@ resource "aws_lambda_function" "write_chapters" {
       API_KEYS_SECRET_ARN = aws_secretsmanager_secret.api_keys_v2.arn
       ARTIFACTS_BUCKET    = aws_s3_bucket.artifacts_bucket.id
 
-      # GPT-5.5 / gpt-image-2 (Responses + Batch; align with local_test/run_local_batch_pipeline.py)
-      MODEL_CONTENT                   = "gpt-5.5"
+      # GPT-5.6-sol / gpt-image-2 (Responses + Batch; align with local_test/run_local_batch_pipeline.py)
+      MODEL_CONTENT                   = "gpt-5.6-sol"
       MODEL_IMAGE                     = "gpt-image-2"
       BATCH_ENDPOINT_RESPONSES        = "/v1/responses"
       REASONING_EFFORT_CHAPTER        = "medium"
@@ -71,17 +75,19 @@ resource "aws_lambda_function" "write_chapters" {
       TEXT_VERBOSITY_ARCHITECT        = "high"
       REASONING_EFFORT_STYLE          = "medium"
       TEXT_VERBOSITY_STYLE            = "low"
-      STYLE_MAX_OUTPUT_TOKENS         = "2500"
-      SECTION_MAX_OUTPUT_TOKENS       = "2000"
+      STYLE_MAX_OUTPUT_TOKENS         = "4000"
+      REASONING_EFFORT_SECTION        = "medium"
+      TEXT_VERBOSITY_SECTION          = "medium"
+      SECTION_MAX_OUTPUT_TOKENS       = "6000"
       SECTION_WORD_TARGET             = "550"
-      SECTION_WORD_MIN                = "450"
+      SECTION_WORD_MIN                = "500"
       SECTION_WORD_MAX                = "600"
       IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = "200"
       BATCH_POLL_INTERVAL             = "30"
       BATCH_MAX_AGE_SECONDS           = "84600"
-      CHAPTER_WORD_TARGET             = "4200"
-      CHAPTER_WORD_MIN                = "600"
-      CHAPTER_WORD_MAX                = "6000"
+      CHAPTER_WORD_TARGET             = "4000"
+      CHAPTER_WORD_MIN                = "1000"
+      CHAPTER_WORD_MAX                = "5000"
       MAX_BATCH_RETRIES               = "3"
       SECTION_GENERATION_MAX_RETRIES  = "2"
       ALLOW_LEGACY_PIPELINE           = "false"

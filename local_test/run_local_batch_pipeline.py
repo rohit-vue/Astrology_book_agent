@@ -34,16 +34,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from book_pdf_exporter import save_book_as_pdf
 from structured_schemas import (
     CHAPTER_TITLE_MAX_LENGTH,
+    STYLE_FIELD_MAX_LENGTH,
     WRITING_STYLE_FIELDS,
     book_structure_schema,
+    book_structure_schema_strict,
+    flatten_writing_style,
+    normalize_writing_style,
     responses_text_format,
+    style_json_for_writer,
+    validate_writing_style_object,
     writing_style_schema,
 )
 from chart_material import (
+    chapter_material_mode,
+    chapter_material_preview,
     enrich_structure_with_chart_snapshots,
+    is_freeform_chapter_material,
+    prepare_chapter_input_material,
     validate_astrology_artifact,
     validate_book_chart_coverage,
     validate_chapter_input_material_used,
+    writer_chart_material_rule,
 )
 
 load_dotenv("/app/.env")
@@ -63,23 +74,24 @@ ASTRO_VEDIC_KEY = os.environ["ASTROLOGY_VEDIC_API_KEY"]
 MODEL_CONTENT = "gpt-5.6-sol"
 MODEL_IMAGE = "gpt-image-2"
 
-# Chapter batch: high reasoning + high verbosity; reserve headroom for reasoning + ~10k-word prose
-REASONING_EFFORT_CHAPTER = "high"
-TEXT_VERBOSITY_CHAPTER = "high"
-CHAPTER_MAX_OUTPUT_TOKENS = 48000
+# Chapter batch: medium reasoning + medium verbosity; reserve headroom for reasoning + ~10k-word prose
+REASONING_EFFORT_CHAPTER = "medium"
+TEXT_VERBOSITY_CHAPTER = "medium"
+CHAPTER_MAX_OUTPUT_TOKENS = 25000
 
 # Architect / long prose (sync Responses)
 REASONING_EFFORT_ARCHITECT = "high"
 TEXT_VERBOSITY_ARCHITECT = "high"
-ARCHITECT_MAX_OUTPUT_TOKENS = 24000
-ARCHITECT_MIN_CHAPTERS = 9
-ARCHITECT_MAX_CHAPTERS = 12
+ARCHITECT_MAX_OUTPUT_TOKENS = 100000
+ARCHITECT_MIN_CHAPTERS = 1
+ARCHITECT_MAX_CHAPTERS = 14
 ARCHITECT_MAX_RETRIES = 2
 
 # Style profile (structured JSON — keep reasoning moderate, text less verbose)
 REASONING_EFFORT_STYLE = "medium"
 TEXT_VERBOSITY_STYLE = "low"
-STYLE_MAX_OUTPUT_TOKENS = 2500
+# Nested emphasize/suppress per domain needs more headroom than flat strings.
+STYLE_MAX_OUTPUT_TOKENS = 4000
 
 # Chart slices the style model is authorized to use (client style_analysis prompt).
 STYLE_AUTHORIZED_CHART_KEYS = (
@@ -90,19 +102,22 @@ STYLE_AUTHORIZED_CHART_KEYS = (
     "VDASHA",
 )
 
-# Preface / prologue / epilogue (batched with chapters)
-SECTION_MAX_OUTPUT_TOKENS = 4000
+# Preface / prologue / epilogue (batched with chapters).
+# Separate from Architect: short sections do not need high reasoning (burns max_output_tokens).
+REASONING_EFFORT_SECTION = "medium"
+TEXT_VERBOSITY_SECTION = "medium"
+SECTION_MAX_OUTPUT_TOKENS = 6000
 SECTION_WORD_TARGET = 550
 SECTION_WORD_MIN = 500
 SECTION_WORD_MAX = 600
 IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = 200
 IMAGE_MIN_BYTES = 50000
 
-BATCH_POLL_INTERVAL = 15  # seconds between status checks
+BATCH_POLL_INTERVAL = 30  # seconds between status checks
 # Fixed per-chapter length; total book length scales with chapter count (5–14).
-CHAPTER_WORD_TARGET = 2000
-CHAPTER_WORD_MIN = 1500
-CHAPTER_WORD_MAX = 2500
+CHAPTER_WORD_TARGET = 4000
+CHAPTER_WORD_MIN = 1000
+CHAPTER_WORD_MAX = 5000
 MAX_BATCH_RETRIES = 3
 
 BATCH_ENDPOINT_RESPONSES = "/v1/responses"
@@ -135,9 +150,9 @@ Each chapter object MUST contain exactly these four fields:
 - "title": a poetic, publishable chapter heading (what appears in the table of contents). Max 70 characters including spaces.
 - "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
 - "description": a detailed writing brief that expands on the theme for the chapter writer.
-- "chapter_input_material_used": a JSON object with "chapter_focus" selected from the provided chart data.
+- "chapter_input_material_used": a JSON object with "chapter_focus" (structured chart cues) and "notes" (free-form architect blob).
   Do NOT invent chart facts. Copy/condense real factors from the Comprehensive Astrological Data.
-  IMPORTANT: chapter_focus is the ONLY chart material the chapter writer will receive (no chart_snapshot, no full chart dump). Make cues dense and self-sufficient.
+  IMPORTANT: chapter_input_material_used is the ONLY chart material the chapter writer will receive (no chart_snapshot, no full chart dump).
   chapter_focus MUST include:
   - "rationale": why these cues are primary for this chapter
   - "western_cues": dense strings from WESTERN_HOROSCOPE. Prefix EVERY cue with "western". Use WESTERN_HOROSCOPE signs/houses only. For planets include name, sign, house, norm_degree, full_degree, is_retro. For aspects include type and orb. For angles include degree when present.
@@ -146,6 +161,7 @@ Each chapter object MUST contain exactly these four fields:
   - "bhavabala_cues": array of compact strings from BHAVABALA / house strengths. Prefix EVERY cue with "bhavabala" and the Sanskrit name (Sukha, Putra, Dhana, etc.). Never treat these as western houses.
   - "vdasha_cues": copy planet + period dates only from VDASHA. Do not add psychological meanings.
   - "transit_cues": dense strings from NATAL_TRANSITS for today (transit planet, aspect, natal point, signs/houses, retro when available)
+  "notes" MUST be a string (use "" if nothing extra): free-form guidance for the writer—narrative angle, emotional emphasis, connections between cues, what to foreground or avoid. Do NOT repeat chart facts already in chapter_focus; add craft/direction the cues alone cannot carry.
   HOUSE SYSTEM RULE (CRITICAL):
   Western houses, Vedic PLANETS houses, and Bhavabala houses are different maps. Never merge them (e.g. do not imply western house 4 and bhavabala house 4 Sukha are the same sign).
   BOOK COVERAGE + UNIQUENESS (CRITICAL):
@@ -198,7 +214,71 @@ Your entire response MUST be a single, valid JSON object.
             "bhavabala_cues": ["bhavabala house 4 Sukha Aries 46% of baseline", "bhavabala house 5 Putra Taurus weakest"],
             "vdasha_cues": ["Current major Jupiter 22-8-2024 to 23-8-2031"],
             "transit_cues": ["Transit Uranus Gemini Conjunction natal IC house 4 retro=false"]
-          }
+          },
+          "notes": "Free-form writer guidance: narrative hook, emotional through-line, what to emphasize beyond the cues (in __LANGUAGE__)."
+        }
+      }
+    ]
+  }
+}
+
+**Comprehensive Astrological Data:**
+__ASTROLOGY_DATA__"""
+
+ARCHITECT_USER_PROMPT_FREEFORM = """**CRITICAL LANGUAGE REQUIREMENT:**
+The Book Title, Chapter Titles, Themes, and Descriptions MUST be written in **__LANGUAGE__**. Do not write in English unless the language is English.
+
+**TASK:**
+Analyze the provided astrological data. Your primary creative goal is to design a book structure that explores what this person needs to hear today, specifically through the lens of **"__FOCUS__"**.
+
+    **RULES FOR THE MAIN BOOK TITLE AND CHAPTER TITLES:**
+    - Maximum 70 total characters INCLUDING spaces.
+    - Prefer Maximum 10-11 words total for the book title.
+
+**CHAPTER OBJECT RULES (CRITICAL):**
+Each chapter object MUST contain exactly these four fields:
+- "title": a poetic, publishable chapter heading (what appears in the table of contents). Max 70 characters including spaces.
+- "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
+- "description": a detailed writing brief that expands on the theme for the chapter writer.
+- "chapter_input_material_used": an open JSON object (additionalProperties allowed).
+  CRITICAL — SELECT SOURCE PATHS, DO NOT PASTE FULL CHART TEXT:
+  - Put exact identifiers into "source_paths": an array of dotted paths into the Comprehensive Astrological Data below.
+  - Examples: "CHARTS.WESTERN_HOROSCOPE.Data.planets.0", "CHARTS.PLANETS.Data.3", "CHARTS.VDASHA.Data.major", "CHARTS.BHAVABALA.Data.houses.1", "CHARTS.NATAL_TRANSITS.Data.transit_relation.2".
+  - Python will copy those source records verbatim into the final chapter_input_material_used for the writer.
+  - You MAY also add optional keys (e.g. "notes") for narrative guidance in __LANGUAGE__.
+  - Do NOT invent chart facts. Do NOT paraphrase chart records as a substitute for source_paths.
+  - Prefer several precise paths per chapter over one huge branch.
+  - Western houses, Vedic planet houses, and Bhavabala houses are different maps — select paths from the correct branch; never merge house systems in notes.
+  IMPORTANT: After hydration, chapter_input_material_used is the ONLY chart material the chapter writer will receive.
+"title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
+
+**STRUCTURE RULES:**
+Choose how many chapters the book needs based on the astrological data and "__FOCUS__".
+You MUST output between __MIN_CHAPTERS__ and __MAX_CHAPTERS__ chapter objects (inclusive).
+Do not output fewer than __MIN_CHAPTERS__ or more than __MAX_CHAPTERS__.
+Each chapter must be thematically distinct and explore a specific facet of "__FOCUS__".
+
+**TECHNICAL MANDATE: JSON OUTPUT**
+Your entire response MUST be a single, valid JSON object.
+{
+  "metadata": { "...": "..." },
+  "ui_labels": { "...": "..." },
+  "structure": {
+    "preface_description": "...",
+    "prologue_description": "...",
+    "epilogue_description": "...",
+    "chapters": [
+      {
+        "title": "Chapter Title (in __LANGUAGE__, max 70 chars)",
+        "theme": "Short conceptual theme distinct from title (in __LANGUAGE__)",
+        "description": "A detailed summary (in __LANGUAGE__).",
+        "chapter_input_material_used": {
+          "source_paths": [
+            "CHARTS.WESTERN_HOROSCOPE.Data.planets.0",
+            "CHARTS.PLANETS.Data.1",
+            "CHARTS.VDASHA.Data.major"
+          ],
+          "notes": "Optional writer guidance in __LANGUAGE__."
         }
       }
     ]
@@ -223,9 +303,18 @@ D=CHARTS.VDASHA.Data:
 
 STYLE RULES
 STYLE must not mention astrology or its technical terms.
+Keep each emphasize / suppress_or_use_sparingly string SHORT and executable (one craft line the chapter writer can follow).
+Hard limit: at most 180 characters per emphasize string and per suppress_or_use_sparingly string.
+Prefer punchy checklist language over long sentences. Do not pack many ideas into one string.
+In suppress_or_use_sparingly, ban repeated stock openers and preachy/clinical/sentimental habits when relevant.
 
 OUTPUT
-STYLE only. Populate every field in the strict JSON schema. Domain semantics:
+STYLE only. Populate every domain in the strict JSON schema.
+Each domain MUST be an object with:
+- emphasize: one short do-this instruction (max 180 chars)
+- suppress_or_use_sparingly: short avoid / use-sparingly bans (max 180 chars)
+
+Domain semantics:
 1 core_voice: CORE VOICE
 2 narrative_cognitive: NARRATIVE/COGNITIVE
 3 temporal_rhythm: TEMPORAL/RHYTHM
@@ -244,7 +333,7 @@ __ASTROLOGY_DATA__
 SECTION_PROMPT_BODY = """Generate narrative prose content for a personal astrology book section.
 Section Type: __SECTION_TYPE__
 Language: __LANGUAGE__
-Style: __STYLE__
+Style (JSON): __STYLE__
 Context: __DESCRIPTION__
 Word Contract: Target __SECTION_WORD_TARGET__ words. Mandatory range __SECTION_WORD_MIN__-__SECTION_WORD_MAX__ words.
 Length Rule: Write until you satisfy the mandatory range, then stop. Do not exceed __SECTION_WORD_MAX__ words.
@@ -502,14 +591,40 @@ def validate_book_structure(data: dict, astrology_data=None) -> tuple[bool, list
 
 
 def _log_cue_coverage_warnings(chapters, astrology_data) -> None:
-    """Coverage/reuse are quality warnings only; they must not fail the book."""
+    """Structured: soft coverage/reuse warnings. Freeform: skip (no chapter_focus)."""
+    if is_freeform_chapter_material():
+        print("  Cue coverage checks skipped (freeform mode).")
+        return
     warnings = validate_book_chart_coverage(chapters, astrology_data)
-    if warnings:
-        print(f"  WARNING: cue coverage/reuse ({len(warnings)}):")
-        for item in warnings:
-            print(f"    - {item}")
-    else:
-        print("  Cue coverage + reuse checks passed.")
+    if not warnings:
+        print("  Cue coverage checks: ok (no soft warnings).")
+        return
+    print(f"  Cue coverage soft warnings ({len(warnings)}):")
+    for w in warnings:
+        print(f"    - {w}")
+
+
+def section_descriptions_from_structure(structure: dict) -> tuple[str, str, str]:
+    """
+    Read preface/prologue/epilogue descriptions from Architect output.
+
+    No hardcoded fallbacks — missing descriptions fail hard.
+    """
+    if not isinstance(structure, dict):
+        raise ValueError("structure missing or not an object (no section-description fallbacks)")
+    struct_inner = structure.get("structure") if isinstance(structure.get("structure"), dict) else {}
+    missing = []
+    values = []
+    for key in SECTION_DESC_KEYS:
+        text = str(structure.get(key) or struct_inner.get(key) or "").strip()
+        if not text:
+            missing.append(key)
+        values.append(text)
+    if missing:
+        raise ValueError(
+            "missing section descriptions (no fallbacks): " + ", ".join(missing)
+        )
+    return values[0], values[1], values[2]
 
 
 def _response_is_incomplete(resp) -> bool:
@@ -551,25 +666,11 @@ def render_style_analysis_prompt(template: str, focus: str, language: str, astro
     return rendered
 
 
-def _validate_writing_style_object(style_obj: dict) -> list[str]:
-    errors = []
-    if not isinstance(style_obj, dict):
-        return ["style response is not an object"]
-    for key in WRITING_STYLE_FIELDS:
-        value = str(style_obj.get(key, "") or "").strip()
-        if not value:
-            errors.append(f"style field '{key}' missing or empty")
-    extra = set(style_obj.keys()) - set(WRITING_STYLE_FIELDS)
-    if extra:
-        errors.append(f"unexpected style fields: {sorted(extra)}")
-    return errors
-
-
-async def generate_writing_style(async_client: AsyncOpenAI, chart: dict, focus: str, language: str) -> str:
-    """Generate structured 8-field STYLE JSON (local client style_analysis)."""
+async def generate_writing_style(async_client: AsyncOpenAI, chart: dict, focus: str, language: str):
+    """Generate compact 8-domain STYLE JSON for chapter/section injection."""
     prompt = render_style_analysis_prompt(STYLE_PROMPT_TEMPLATE, focus, language, chart)
     schema = writing_style_schema()
-    print("  Generating writing style profile (Responses API, json_schema)...")
+    print("  Generating writing style profile (Responses API, json_schema, emphasize/suppress)...")
     style_resp = await async_client.responses.create(
         model=MODEL_CONTENT,
         input=[{"role": "user", "content": prompt}],
@@ -592,14 +693,18 @@ async def generate_writing_style(async_client: AsyncOpenAI, chart: dict, focus: 
         style_obj = json.loads(raw)
     except json.JSONDecodeError as e:
         raise ValueError(f"style analysis returned invalid JSON: {e}") from e
-    errors = _validate_writing_style_object(style_obj)
+    errors = validate_writing_style_object(style_obj)
     if errors:
         raise ValueError("style analysis validation failed: " + "; ".join(errors))
-    # Normalize to required fields only (stable injection into chapter prompts).
-    normalized = {key: str(style_obj[key]).strip() for key in WRITING_STYLE_FIELDS}
-    style = json.dumps(normalized, ensure_ascii=False, indent=2)
-    print(f"  Generated writing style profile ({len(style)} chars, {len(WRITING_STYLE_FIELDS)} fields)")
-    return style
+    normalized = normalize_writing_style(style_obj)
+    style_for_writer = style_json_for_writer(normalized)
+    style_readable = flatten_writing_style(normalized)
+    print(
+        f"  Generated writing style profile "
+        f"(writer JSON {len(style_for_writer)} chars, readable {len(style_readable)} chars, "
+        f"{len(WRITING_STYLE_FIELDS)} domains, max {STYLE_FIELD_MAX_LENGTH} chars/field)"
+    )
+    return style_for_writer, normalized, style_readable
 
 
 def _section_prompt_template(name: str) -> str:
@@ -637,16 +742,7 @@ def _section_batch_prompt(name, description, style, language):
 
 
 def build_section_batch_tasks(structure, style, language):
-    struct_inner = structure.get("structure", {})
-    preface_desc = structure.get("preface_description") or struct_inner.get("preface_description") or (
-        "Write a warm, welcoming preface setting the stage for a journey of self-discovery based on the user's astrology."
-    )
-    prologue_desc = structure.get("prologue_description") or struct_inner.get("prologue_description") or (
-        "Write an introduction that explains the core themes of the book and invites the reader to explore their inner world."
-    )
-    epilogue_desc = structure.get("epilogue_description") or struct_inner.get("epilogue_description") or (
-        "Write a concluding chapter that synthesizes the journey, offering encouragement and a call to action for the future."
-    )
+    preface_desc, prologue_desc, epilogue_desc = section_descriptions_from_structure(structure)
     section_specs = [
         ("section-preface", "Preface", preface_desc),
         ("section-prologue", "Prologue", prologue_desc),
@@ -666,15 +762,19 @@ def build_section_batch_tasks(structure, style, language):
                     "input": [{"role": "user", "content": prompt}],
                     "text": {
                         "format": {"type": "text"},
-                        "verbosity": TEXT_VERBOSITY_ARCHITECT,
+                        "verbosity": TEXT_VERBOSITY_SECTION,
                     },
-                    "reasoning": {"effort": REASONING_EFFORT_ARCHITECT},
+                    "reasoning": {"effort": REASONING_EFFORT_SECTION},
                     "max_output_tokens": SECTION_MAX_OUTPUT_TOKENS,
                 },
             }
         )
         manifest[custom_id] = {"section_name": name.lower(), "description": description}
-        print(f"    Task '{custom_id}': {name}")
+        print(
+            f"    Task '{custom_id}': {name} "
+            f"(reasoning={REASONING_EFFORT_SECTION}, verbosity={TEXT_VERBOSITY_SECTION}, "
+            f"max_output_tokens={SECTION_MAX_OUTPUT_TOKENS})"
+        )
     return tasks, manifest
 
 
@@ -798,8 +898,13 @@ def architect_book(astrology_data, focus, language):
         .replace("__LANGUAGE__", language)
         .replace("__FOCUS__", focus)
     )
+    user_prompt_template = (
+        ARCHITECT_USER_PROMPT_FREEFORM
+        if is_freeform_chapter_material()
+        else ARCHITECT_USER_PROMPT
+    )
     user_prompt = (
-        ARCHITECT_USER_PROMPT
+        user_prompt_template
         .replace("__FOCUS__", focus)
         .replace("__LANGUAGE__", language)
         .replace("__ASTROLOGY_DATA__", json.dumps(astrology_data, indent=2))
@@ -810,10 +915,16 @@ def architect_book(astrology_data, focus, language):
     client = OpenAI(api_key=OPENAI_API_KEY)
     max_attempts = ARCHITECT_MAX_RETRIES + 1
     last_errors = []
+    material_mode = chapter_material_mode()
 
     for attempt in range(1, max_attempts + 1):
         print(f"  Calling OpenAI Responses API (attempt {attempt}/{max_attempts})...")
-        schema = book_structure_schema(ARCHITECT_MIN_CHAPTERS, ARCHITECT_MAX_CHAPTERS)
+        print(f"  chapter_input_material_used mode: {material_mode}")
+        schema = book_structure_schema(
+            ARCHITECT_MIN_CHAPTERS,
+            ARCHITECT_MAX_CHAPTERS,
+            chapter_material_mode=material_mode,
+        )
         resp = client.responses.create(
             model=MODEL_CONTENT,
             input=[
@@ -824,6 +935,7 @@ def architect_book(astrology_data, focus, language):
                 "book_structure",
                 schema,
                 verbosity=TEXT_VERBOSITY_ARCHITECT,
+                strict=book_structure_schema_strict(material_mode),
             ),
             reasoning={"effort": REASONING_EFFORT_ARCHITECT},
             max_output_tokens=ARCHITECT_MAX_OUTPUT_TOKENS,
@@ -847,28 +959,40 @@ def architect_book(astrology_data, focus, language):
             print(f"  VALIDATION FAIL attempt {attempt}: {last_errors[0]}")
             continue
 
+        # Freeform: hydrate source_paths → source_records before validation.
+        structure = enrich_structure_with_chart_snapshots(structure, astrology_data)
         ok, errors = validate_book_structure(structure, astrology_data)
         if ok:
-            structure = enrich_structure_with_chart_snapshots(structure, astrology_data)
             chapters = _chapters_from_structure(structure)
             print(f"  Generated valid structure with {len(chapters)} chapters.")
             _log_cue_coverage_warnings(chapters, astrology_data)
             for i, ch in enumerate(chapters, start=1):
                 title = str(ch.get("title", "") or "")
-                material = ch.get("chapter_input_material_used") or {}
-                focus = (material.get("chapter_focus") or {}) if isinstance(material, dict) else {}
-                rationale = str(focus.get("rationale", "") or "")
+                material = prepare_chapter_input_material(
+                    ch.get("chapter_input_material_used"),
+                    astrology_data,
+                )
+                ch["chapter_input_material_used"] = material
+                preview = chapter_material_preview(material)
                 print(
                     f"    Chapter {i}: {title} ({len(title)} chars) | "
                     f"theme: {ch.get('theme', '')} | "
-                    f"focus: {rationale[:80]}"
+                    f"{preview}"
                 )
             out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(structure, f, indent=2, ensure_ascii=False)
             print(f"  Saved -> {out_path}")
-            focus_chars = len(json.dumps((chapters[0].get("chapter_input_material_used") or {}).get("chapter_focus"), ensure_ascii=False)) if chapters else 0
-            print(f"  Focus-only mode: chapter_focus only (~{focus_chars} chars on chapter 1); no chart_snapshot.")
+            if chapters:
+                mat0 = prepare_chapter_input_material(
+                    chapters[0].get("chapter_input_material_used"),
+                    astrology_data,
+                )
+                mat0_json = json.dumps(mat0, ensure_ascii=False)
+                print(
+                    f"  Writer material mode={material_mode}: chapter 1 "
+                    f"chapter_input_material_used ~{len(mat0_json):,} chars; no chart_snapshot."
+                )
             return structure
 
         last_errors = errors
@@ -914,36 +1038,30 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
         material_errors = validate_chapter_input_material_used(material, chapter_num)
         if material_errors:
             raise ValueError("; ".join(material_errors))
-        if not isinstance(material, dict) or "chapter_focus" not in material:
+        if not isinstance(material, dict):
             raise ValueError(
-                f"chapter {chapter_num} chapter_input_material_used.chapter_focus missing"
+                f"chapter {chapter_num} chapter_input_material_used missing or not an object"
             )
-        if "chart_snapshot" in material:
-            # Focus-only experiment: never send snapshot to the writer.
-            material = {"chapter_focus": material.get("chapter_focus") or {}}
+        material = prepare_chapter_input_material(material, astrology_data)
         custom_id = f"chapter-{chapter_num}"
         material_json = json.dumps(material, ensure_ascii=False)
         full_chart_chars = len(json.dumps(astrology_data, ensure_ascii=False))
-        chapter_focus = material.get("chapter_focus") or {}
-        rationale = str(chapter_focus.get("rationale", "") or "")
         print(f"    Task '{custom_id}': {title}")
-        print(f"      Focus: {rationale[:120]}")
+        print(f"      Material: {chapter_material_preview(material)}")
         print(
             f"      chapter_input_material_used: {len(material_json):,} chars "
-            f"(focus-only; full chart dump removed: ~{full_chart_chars:,} chars saved)"
+            f"(mode={chapter_material_mode()}; full chart dump removed: ~{full_chart_chars:,} chars saved)"
         )
 
         prompt = (
             f'Write Chapter {chapter_num}: "{title}".\n'
             f"**Language:** {language}\n"
-            f"**Style:** {style}\n"
+            f"**Style (JSON):** {style}\n"
             f"**Focus:** {focus}\n"
             f"**Theme:** {theme}\n"
             f"**Summary:** {description}\n"
             f"**Chapter input material used:** {material_json}\n"
-            f"**Chart focus rule:** Ground this chapter ONLY in "
-            f"chapter_input_material_used.chapter_focus. Those dense chart cues are the "
-            f"sole chart material. Do not invent extra chart factors beyond that material.\n"
+            f"{writer_chart_material_rule()}\n"
             f"**House system rule:** Western houses, Vedic planet houses, and Bhavabala "
             f"houses are different maps. Translate each family into lived language separately. "
             f"Do not merge them into one house story (do not write as if house 4 is both "
@@ -959,14 +1077,41 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"(5) shadow expression, (6) reframing, (7) practical integration prompts.\n"
             f"**Formatting:** Plain paragraphs. No bold. No headers.\n"
             f"**Paragraphing (critical for layout):** Write like a printed book chapter, not chat.\n"
-            f"- **Vary paragraph length deliberately.** Mix shorter paragraphs (often **3-5 sentences**, about **2–3 printed lines**) with medium and longer ones. "
-            f"Do **not** settle into a steady rhythm where every paragraph is the same size (e.g. always four or five lines).\n"
-            f"- **Short paragraphs are allowed** for emphasis, a turn in thought, or a breath between ideas—use them **sometimes**, not after every sentence.\n"
-            f"- Longer paragraphs are fine when the idea needs room; neighbor paragraphs may be much shorter so the page does not look like uniform blocks.\n"
+            f"- **Vary paragraph length deliberately.** Keep a clear mix of short, medium, and very long paragraphs. "
+            f"Do **not** settle into a steady rhythm where every paragraph is the same size.\n"
+            f"- **Short paragraphs (2–4 printed lines):** for emphasis, a turn in thought, or a breath — use sparingly.\n"
+            f"- **Medium paragraphs (5–8 printed lines):** the majority of the chapter.\n"
+            f"- **Longer medium (9–13 printed lines):** use some of these between the very long blocks so the page is not only mid + giant.\n"
             f"- Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.\n"
-            f"- Use **double newlines (blank line)** ONLY between **major sections** (e.g. opening, each big thematic turn, closing). "
-            f"**At most 8–10 double-newlines in the whole chapter.** Never put a double-newline after every sentence or quoted line.\n"
-            f"- For examples or quoted phrases, weave them into prose or use **one** short block; do not stack many one-line blocks separated by blank lines.\n"
+            f"- Use a blank line between paragraphs.\n"
+            f"Hard rule — no orphan one-liners:\n"
+            f"- Never place a single short line / one-sentence fragment as its own paragraph between longer paragraphs "
+            f"(e.g. one punchy sentence alone between two multi-sentence blocks).\n"
+            f"- If a sentence is for emphasis, keep it inside the preceding or following paragraph "
+            f"(same block, spaces — not a blank-line break).\n"
+            f"- Exception: multi-line breaks are allowed when the content truly needs them — dialogue, a short quoted exchange, "
+            f"a list of spoken lines, or similar conversation/script layout. Those lines may use single newlines within that block.\n"
+            f"- A standalone paragraph must be at least 2–3 full sentences (several printed lines), "
+            f"unless it is part of that dialogue/conversation exception.\n"
+            f"Very long paragraphs (mandatory count, soft length):\n"
+            f"- Every chapter MUST contain **2 or 3** very long paragraphs — no fewer than **2**, and **never more than 3**.\n"
+            f"- Prefer about **10–14 sentences** and roughly **14–18 printed lines** "
+            f"(one continuous block; spaces between sentences, not blank lines inside it).\n"
+            f"- Prefer the middle of that band (~15–17 lines) when the idea can land there.\n"
+            f"- Thought preservation (critical): stay with one idea until it turns. "
+            f"Do **not** split mid-thought just to hit a line count. "
+            f"If a paragraph runs longer because it is still one continuous argument or story beat, that is allowed.\n"
+            f"- If the block passes ~20 lines because a **second** idea has started, start a new paragraph at that turn — "
+            f"not mid-sentence. Avoid 25+ line walls unless the idea genuinely cannot turn earlier.\n"
+            f"- Place the 2–3 very long blocks in different parts of the chapter (early / middle / late), "
+            f"not all in one stretch.\n"
+            f"- Count cap (critical): if you have written a **4th** very long paragraph, "
+            f"split the extra into medium paragraphs. Four or more very long paragraphs is too many.\n"
+            f"- Count before you finish: confirm you have **exactly 2 or 3** very long paragraphs, "
+            f"then fill the rest with a mix of short + medium + longer-medium. "
+            f"Do not stop at one showcase long paragraph; do not flood the chapter with 4–6 giants.\n"
+            f"- Do not break a long thought into two medium paragraphs just to create white space; "
+            f"keep related sentences together until the idea turns — unless you are past the 3-count cap.\n"
             f"**Output Rule:** Return only final chapter prose. "
             f"Do not begin with \"Chapter {chapter_num}:\" or the chapter title. "
             f"Start directly with body prose; first characters must be narrative text, never a heading."
@@ -1469,22 +1614,34 @@ async def write_chapters(astrology_data, structure, focus, language):
     sync_client = OpenAI(api_key=OPENAI_API_KEY)
 
     style_path = os.path.join(ARTIFACTS_DIR, "writing_style.txt")
-    if _env_flag("SKIP_STYLE") and os.path.isfile(style_path):
+    style_json_path = os.path.join(ARTIFACTS_DIR, "writing_style.json")
+    if _env_flag("SKIP_STYLE") and os.path.isfile(style_json_path):
+        with open(style_json_path, "r", encoding="utf-8") as f:
+            normalized = json.load(f)
+        errors = validate_writing_style_object(normalized)
+        if errors:
+            raise ValueError("SKIP_STYLE reused writing_style.json invalid: " + "; ".join(errors))
+        normalized = normalize_writing_style(normalized)
+        style = style_json_for_writer(normalized)
+        print(f"  SKIP_STYLE: reusing {style_json_path} ({len(style)} JSON chars for writer)")
+    elif _env_flag("SKIP_STYLE") and os.path.isfile(style_path):
+        # Legacy: flattened text only — still injectable, but prefer JSON next run.
         with open(style_path, "r", encoding="utf-8") as f:
             style = f.read().strip()
         if not style:
             raise ValueError("SKIP_STYLE set but writing_style.txt is empty")
-        print(f"  SKIP_STYLE: reusing {style_path} ({len(style)} chars)")
+        print(f"  SKIP_STYLE: reusing flattened {style_path} ({len(style)} chars)")
     else:
-        style = await generate_writing_style(async_client, astrology_data, focus, language)
+        style, normalized, style_readable = await generate_writing_style(
+            async_client, astrology_data, focus, language
+        )
         with open(style_path, "w", encoding="utf-8") as f:
-            f.write(style)
+            f.write(style_readable)
         print(f"  Saved -> {style_path}")
-        style_json_path = os.path.join(ARTIFACTS_DIR, "writing_style.json")
         with open(style_json_path, "w", encoding="utf-8") as f:
-            f.write(style)
+            json.dump(normalized, f, ensure_ascii=False, indent=2)
         print(f"  Saved -> {style_json_path}")
-    print(f"  Style: {style[:120]}...")
+    print(f"  Style (JSON) for writer: {style[:160]}...")
 
     struct_inner = structure.get("structure", {})
 
@@ -1705,6 +1862,7 @@ def main():
     print(f"Pipeline (BATCH) started at {datetime.now().isoformat()}")
     print(f"  Focus:    {focus}")
     print(f"  Language: {language}")
+    print(f"  chapter_input_material_used mode: {chapter_material_mode()}")
     print(f"  Birth:    {json.dumps(birth_data)}")
     start = time.time()
 
@@ -1725,26 +1883,32 @@ def main():
             raise FileNotFoundError(f"SKIP_ARCHITECT set but missing {structure_path}")
         with open(structure_path, "r", encoding="utf-8") as f:
             structure = json.load(f)
+        # Hydrate freeform source_paths before validation.
+        structure = enrich_structure_with_chart_snapshots(structure, astrology_data)
         ok, errors = validate_book_structure(structure, astrology_data)
         if not ok:
             raise ValueError("SKIP_ARCHITECT reused structure failed validation: " + "; ".join(errors))
-        structure = enrich_structure_with_chart_snapshots(structure, astrology_data)
         chapters = _chapters_from_structure(structure)
         print(f"  SKIP_ARCHITECT: reusing {structure_path} ({len(chapters)} chapters)")
         _log_cue_coverage_warnings(chapters, astrology_data)
         for i, ch in enumerate(chapters, start=1):
             title = str(ch.get("title", "") or "")
-            material = ch.get("chapter_input_material_used") or {}
-            chapter_focus = (material.get("chapter_focus") or {}) if isinstance(material, dict) else {}
-            rationale = str(chapter_focus.get("rationale", "") or "")
+            material = prepare_chapter_input_material(
+                ch.get("chapter_input_material_used"),
+                astrology_data,
+            )
+            ch["chapter_input_material_used"] = material
             print(
                 f"    Chapter {i}: {title} ({len(title)} chars) | "
                 f"theme: {ch.get('theme', '')} | "
-                f"focus: {rationale[:80]}"
+                f"{chapter_material_preview(material)}"
             )
         with open(structure_path, "w", encoding="utf-8") as f:
             json.dump(structure, f, indent=2, ensure_ascii=False)
-        print(f"  Normalized to focus-only (no chart_snapshot) -> {structure_path}")
+        print(
+            f"  Normalized chapter_input_material_used "
+            f"(mode={chapter_material_mode()}, no chart_snapshot) -> {structure_path}"
+        )
     else:
         structure = architect_book(astrology_data, focus, language)
 
