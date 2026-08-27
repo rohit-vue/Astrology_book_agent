@@ -31,7 +31,10 @@ from openai import OpenAI, AsyncOpenAI
 
 sys.path.insert(0, "/app/generate_pdf")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from book_pdf_exporter import save_book_as_pdf
+try:
+    from book_pdf_exporter import save_book_as_pdf
+except ModuleNotFoundError:
+    from book_pdf_exporter_local import save_book_as_pdf
 from structured_schemas import (
     CHAPTER_TITLE_MAX_LENGTH,
     STYLE_FIELD_MAX_LENGTH,
@@ -46,6 +49,7 @@ from structured_schemas import (
     writing_style_schema,
 )
 from chart_material import (
+    build_architect_model_input,
     chapter_material_mode,
     chapter_material_preview,
     enrich_structure_with_chart_snapshots,
@@ -63,6 +67,27 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 def _env_flag(key: str) -> bool:
     return os.environ.get(key, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _architect_forced_retry_errors() -> list[str]:
+    """Local smoke-test hook: force one guided Architect retry with realistic errors."""
+    if not _env_flag("ARCHITECT_FORCE_RETRY_GUIDE_ONCE"):
+        return []
+
+    custom = os.environ.get("ARCHITECT_FORCE_RETRY_GUIDE_ERROR", "").strip()
+    if custom:
+        return [line.strip() for line in custom.splitlines() if line.strip()]
+
+    return [
+        "chapter 1 mixes conflicting Ascendant signs without system-separation "
+        "notes (western Aquarius vs vedic Capricorn). Keep them in different "
+        "chapters, or add notes that name Western and Vedic as distinct maps "
+        "and forbid reconciling them.",
+        "chapter 5 mixes western and vedic house number(s) [10] without "
+        "system-separation notes. Split systems across chapters, or add notes "
+        "that keep Western and Vedic house maps distinct (do not merge).",
+    ]
+
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ASTRO_WESTERN_UID = os.environ["ASTROLOGY_WESTERN_USER_ID"]
@@ -249,6 +274,8 @@ Each chapter object MUST contain exactly these four fields:
   - Do NOT invent chart facts. Do NOT paraphrase chart records as a substitute for source_paths.
   - Prefer several precise paths per chapter over one huge branch.
   - Western houses, Vedic planet houses, and Bhavabala houses are different maps — select paths from the correct branch; never merge house systems in notes.
+  - HARD VALIDATION: If one chapter includes both a Western Ascendant/1st-house cusp and a Vedic Ascendant with different signs, notes MUST name Western and Vedic as distinct maps and forbid reconciling them (or put them in different chapters).
+  - HARD VALIDATION: If one chapter uses the same house number from both Western and Vedic records, notes MUST keep those house maps distinct (e.g. name Western and Vedic, or say do not merge / remain distinct). Unguided mixes are rejected.
   IMPORTANT: After hydration, chapter_input_material_used is the ONLY chart material the chapter writer will receive.
 "title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
 
@@ -604,6 +631,74 @@ def _log_cue_coverage_warnings(chapters, astrology_data) -> None:
         print(f"    - {w}")
 
 
+def _is_soft_architect_validation_errors(errors: list[str]) -> bool:
+    """Return true when errors are limited to chart-material selection guidance."""
+    if not errors:
+        return False
+    soft_markers = (
+        "chapter_input_material_used",
+        "source_paths",
+        "source_records",
+        "source_paths_unresolved",
+        "unresolved source_paths",
+        "mixes conflicting ascendant",
+        "mixes western and vedic house",
+        "system-separation notes",
+    )
+    return all(
+        any(marker in str(error).casefold() for marker in soft_markers)
+        for error in errors
+    )
+
+
+def _finish_architect_structure(
+    structure: dict,
+    astrology_data: dict,
+    material_mode: str,
+    *,
+    warning_errors: list[str] | None = None,
+) -> dict:
+    chapters = _chapters_from_structure(structure)
+    if warning_errors:
+        print(
+            "  WARNING: proceeding with architect structure after one guided "
+            "chart-material retry; remaining validation issue(s):"
+        )
+        for error in warning_errors:
+            print(f"    - {error}")
+    else:
+        print(f"  Generated valid structure with {len(chapters)} chapters.")
+    _log_cue_coverage_warnings(chapters, astrology_data)
+    for i, ch in enumerate(chapters, start=1):
+        title = str(ch.get("title", "") or "")
+        material = prepare_chapter_input_material(
+            ch.get("chapter_input_material_used"),
+            astrology_data,
+        )
+        ch["chapter_input_material_used"] = material
+        preview = chapter_material_preview(material)
+        print(
+            f"    Chapter {i}: {title} ({len(title)} chars) | "
+            f"theme: {ch.get('theme', '')} | "
+            f"{preview}"
+        )
+    out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(structure, f, indent=2, ensure_ascii=False)
+    print(f"  Saved -> {out_path}")
+    if chapters:
+        mat0 = prepare_chapter_input_material(
+            chapters[0].get("chapter_input_material_used"),
+            astrology_data,
+        )
+        mat0_json = json.dumps(mat0, ensure_ascii=False)
+        print(
+            f"  Writer material mode={material_mode}: chapter 1 "
+            f"chapter_input_material_used ~{len(mat0_json):,} chars; no chart_snapshot."
+        )
+    return structure
+
+
 def section_descriptions_from_structure(structure: dict) -> tuple[str, str, str]:
     """
     Read preface/prologue/epilogue descriptions from Architect output.
@@ -916,10 +1011,18 @@ def architect_book(astrology_data, focus, language):
     max_attempts = ARCHITECT_MAX_RETRIES + 1
     last_errors = []
     material_mode = chapter_material_mode()
+    soft_validation_retries = 0
+    fallback_structure = None
+    fallback_errors = []
 
     for attempt in range(1, max_attempts + 1):
         print(f"  Calling OpenAI Responses API (attempt {attempt}/{max_attempts})...")
         print(f"  chapter_input_material_used mode: {material_mode}")
+        if last_errors:
+            print(
+                f"  Attaching validation retry guide "
+                f"({len(last_errors)} error(s) from prior attempt; no previous JSON)."
+            )
         schema = book_structure_schema(
             ARCHITECT_MIN_CHAPTERS,
             ARCHITECT_MAX_CHAPTERS,
@@ -927,10 +1030,11 @@ def architect_book(astrology_data, focus, language):
         )
         resp = client.responses.create(
             model=MODEL_CONTENT,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            input=build_architect_model_input(
+                system_prompt,
+                user_prompt,
+                last_errors=last_errors or None,
+            ),
             text=responses_text_format(
                 "book_structure",
                 schema,
@@ -963,40 +1067,54 @@ def architect_book(astrology_data, focus, language):
         structure = enrich_structure_with_chart_snapshots(structure, astrology_data)
         ok, errors = validate_book_structure(structure, astrology_data)
         if ok:
-            chapters = _chapters_from_structure(structure)
-            print(f"  Generated valid structure with {len(chapters)} chapters.")
-            _log_cue_coverage_warnings(chapters, astrology_data)
-            for i, ch in enumerate(chapters, start=1):
-                title = str(ch.get("title", "") or "")
-                material = prepare_chapter_input_material(
-                    ch.get("chapter_input_material_used"),
-                    astrology_data,
-                )
-                ch["chapter_input_material_used"] = material
-                preview = chapter_material_preview(material)
+            forced_errors = (
+                _architect_forced_retry_errors()
+                if attempt == 1
+                else []
+            )
+            if forced_errors:
+                last_errors = forced_errors
                 print(
-                    f"    Chapter {i}: {title} ({len(title)} chars) | "
-                    f"theme: {ch.get('theme', '')} | "
-                    f"{preview}"
+                    "  FORCED LOCAL RETRY: injecting validation guide smoke-test "
+                    f"error(s): {forced_errors}"
                 )
-            out_path = os.path.join(ARTIFACTS_DIR, "book_structure.json")
-            with open(out_path, "w", encoding="utf-8") as f:
-                json.dump(structure, f, indent=2, ensure_ascii=False)
-            print(f"  Saved -> {out_path}")
-            if chapters:
-                mat0 = prepare_chapter_input_material(
-                    chapters[0].get("chapter_input_material_used"),
-                    astrology_data,
-                )
-                mat0_json = json.dumps(mat0, ensure_ascii=False)
+                continue
+
+            return _finish_architect_structure(
+                structure,
+                astrology_data,
+                material_mode,
+            )
+
+        if _is_soft_architect_validation_errors(errors):
+            fallback_structure = structure
+            fallback_errors = errors
+            if soft_validation_retries < 1:
+                soft_validation_retries += 1
+                last_errors = errors
                 print(
-                    f"  Writer material mode={material_mode}: chapter 1 "
-                    f"chapter_input_material_used ~{len(mat0_json):,} chars; no chart_snapshot."
+                    f"  VALIDATION FAIL attempt {attempt}: {errors} "
+                    "(chart-material guidance only; retrying once)"
                 )
-            return structure
+                continue
+
+            return _finish_architect_structure(
+                structure,
+                astrology_data,
+                material_mode,
+                warning_errors=errors,
+            )
 
         last_errors = errors
         print(f"  VALIDATION FAIL attempt {attempt}: {errors}")
+
+    if fallback_structure is not None:
+        return _finish_architect_structure(
+            fallback_structure,
+            astrology_data,
+            material_mode,
+            warning_errors=fallback_errors,
+        )
 
     raise ValueError(
         f"Book structure invalid after {max_attempts} attempt(s): " + "; ".join(last_errors)

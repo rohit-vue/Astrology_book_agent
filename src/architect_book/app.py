@@ -3,7 +3,7 @@ import json
 import os
 import re
 from botocore.config import Config
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI, RateLimitError
 from urllib.parse import urlparse
 
 from chart_material import (
@@ -80,6 +80,43 @@ METADATA_KEYS = (
 )
 UI_LABEL_KEYS = ("toc_title", "chapter_prefix")
 SECTION_DESC_KEYS = ("preface_description", "prologue_description", "epilogue_description")
+
+
+class RetryableOpenAIError(RuntimeError):
+    """Raised for OpenAI failures that Step Functions should retry."""
+
+
+def _is_retryable_openai_error(exc: Exception) -> bool:
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        status = getattr(exc, "status_code", None)
+        return status in {408, 409, 429} or (isinstance(status, int) and status >= 500)
+    return False
+
+
+def _openai_error_summary(exc: Exception) -> str:
+    status = getattr(exc, "status_code", None)
+    request_id = getattr(exc, "request_id", None)
+    parts = [exc.__class__.__name__]
+    if status is not None:
+        parts.append(f"status={status}")
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    return " ".join(parts)
+
+
+def _call_openai(operation: str, func, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except Exception as exc:
+        if _is_retryable_openai_error(exc):
+            summary = _openai_error_summary(exc)
+            print(f"Retryable OpenAI error during {operation}: {summary}")
+            raise RetryableOpenAIError(
+                f"Retryable OpenAI error during {operation}: {summary}"
+            ) from exc
+        raise
 
 
 def parse_s3_path(s3_path):
@@ -265,7 +302,9 @@ def architect_book_structure(
     for attempt in range(1, max_attempts + 1):
         print(f"Calling OpenAI to architect book structure (attempt {attempt}/{max_attempts})...")
         print("chapter_input_material_used mode: freeform")
-        response = openai_client.responses.create(
+        response = _call_openai(
+            "architect responses.create",
+            openai_client.responses.create,
             model=MODEL_ID,
             input=[
                 {"role": "system", "content": system_prompt},

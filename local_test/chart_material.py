@@ -5,6 +5,8 @@ Modes (CHAPTER_MATERIAL_MODE env):
 - freeform: open object (additionalProperties true). Architect selects
   source_paths into astrology_data; Python copies those records into
   chapter_input_material_used.source_records for the writer (no coverage).
+  Hard safeguards still reject unguided Western/Vedic Ascendant-sign clashes
+  and same house-number mixes in one chapter (notes must keep systems distinct).
 """
 from __future__ import annotations
 
@@ -268,6 +270,140 @@ def _validate_chapter_input_material_used_structured(material, idx: int) -> list
     return errors
 
 
+def _path_system(path: str) -> str | None:
+    """Classify a source path as western | vedic | bhavabala (or None)."""
+    pu = str(path or "").upper().replace("/", ".")
+    if "WESTERN_HOROSCOPE" in pu:
+        return "western"
+    if "BHAVABALA" in pu:
+        return "bhavabala"
+    # Vedic PLANETS branch (not western planets).
+    if "PLANETS" in pu and "WESTERN" not in pu:
+        return "vedic"
+    return None
+
+
+def _record_house_number(record) -> int | None:
+    if not isinstance(record, dict):
+        return None
+    for key in ("house", "id"):
+        raw = record.get(key)
+        if isinstance(raw, bool):
+            continue
+        if isinstance(raw, (int, float)):
+            n = int(raw)
+            if 1 <= n <= 12:
+                return n
+        if isinstance(raw, str) and raw.strip().isdigit():
+            n = int(raw.strip())
+            if 1 <= n <= 12:
+                return n
+    return None
+
+
+def _is_ascendant_name(name: str) -> bool:
+    n = str(name or "").casefold().strip()
+    return n in {"ascendant", "asc", "rising", "lagna"}
+
+
+def _notes_separate_western_vedic(notes: str) -> bool:
+    """True when notes explicitly name Western and Vedic as distinct lenses."""
+    n = str(notes or "").casefold()
+    if not n.strip():
+        return False
+    has_western = "western" in n
+    has_vedic = "vedic" in n or "sidereal" in n
+    # Require both system names so unrelated "do not merge" prose cannot pass.
+    return has_western and has_vedic
+
+
+def _iter_source_records(material: dict):
+    records = material.get("source_records")
+    if not isinstance(records, list):
+        return
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        yield path, item.get("record")
+
+
+def validate_freeform_system_separation(material: dict, idx: int) -> list[str]:
+    """
+    Hard freeform safeguards (Derek-run learnings):
+
+    1) Ascendant clash — Western Asc sign and Vedic Asc sign in the same chapter
+       with different signs must have notes that keep the systems distinct.
+    2) House-number mix — same house number from Western and Vedic planet/cusp
+       records in one chapter must have the same notes separation.
+
+    Multi-system chapters remain allowed (freeform essence); only unguided mixes fail.
+    """
+    if not isinstance(material, dict):
+        return []
+
+    western_asc_sign = None
+    vedic_asc_sign = None
+    western_houses: set[int] = set()
+    vedic_houses: set[int] = set()
+
+    for path, record in _iter_source_records(material):
+        system = _path_system(path)
+        if system is None or not isinstance(record, dict):
+            continue
+        pu = path.upper().replace("/", ".")
+        house = _record_house_number(record)
+        name = str(record.get("name") or "")
+
+        if system == "western":
+            if ".HOUSES." in pu and house is not None:
+                western_houses.add(house)
+                if house == 1 and record.get("sign"):
+                    western_asc_sign = str(record.get("sign")).strip()
+            elif house is not None:
+                # Natal bodies / points carrying a western house arena.
+                western_houses.add(house)
+            if _is_ascendant_name(name) and record.get("sign"):
+                western_asc_sign = str(record.get("sign")).strip() or western_asc_sign
+
+        elif system == "vedic":
+            if house is not None:
+                vedic_houses.add(house)
+            if _is_ascendant_name(name) and record.get("sign"):
+                vedic_asc_sign = str(record.get("sign")).strip()
+
+    errors: list[str] = []
+    notes = material.get("notes") if isinstance(material.get("notes"), str) else ""
+    separated = _notes_separate_western_vedic(notes)
+
+    if (
+        western_asc_sign
+        and vedic_asc_sign
+        and western_asc_sign.casefold() != vedic_asc_sign.casefold()
+        and not separated
+    ):
+        errors.append(
+            f"chapter {idx} mixes conflicting Ascendant signs without system-separation "
+            f"notes (western {western_asc_sign} vs vedic {vedic_asc_sign}). "
+            f"Keep them in different chapters, or add notes that name Western and Vedic "
+            f"as distinct maps and forbid reconciling them."
+        )
+
+    overlap = sorted(western_houses & vedic_houses)
+    if overlap and not separated:
+        shown = ", ".join(str(h) for h in overlap[:6])
+        suffix = "..." if len(overlap) > 6 else ""
+        errors.append(
+            f"chapter {idx} mixes western and vedic house number(s) [{shown}{suffix}] "
+            f"without system-separation notes. Split systems across chapters, or add "
+            f"notes that keep Western and Vedic house maps distinct (do not merge)."
+        )
+
+    return errors
+
+
 def _validate_chapter_input_material_used_freeform(material, idx: int) -> list[str]:
     errors = []
     if not isinstance(material, dict):
@@ -295,6 +431,7 @@ def _validate_chapter_input_material_used_freeform(material, idx: int) -> list[s
             errors.append(
                 f"chapter {idx} unresolved source_paths: {shown}{suffix}"
             )
+        errors.extend(validate_freeform_system_separation(material, idx))
     try:
         size = len(json.dumps(material, ensure_ascii=False))
     except (TypeError, ValueError):
@@ -312,6 +449,97 @@ def validate_chapter_input_material_used(material, idx: int) -> list[str]:
     if is_freeform_chapter_material():
         return _validate_chapter_input_material_used_freeform(material, idx)
     return _validate_chapter_input_material_used_structured(material, idx)
+
+
+def build_architect_validation_retry_guide(errors: list[str]) -> str:
+    """
+    Compact retry feedback for Architect (no previous JSON — keeps tokens down).
+
+    Attach as an extra user message on attempt 2+.
+    """
+    cleaned = [str(e).strip() for e in (errors or []) if str(e).strip()]
+    if not cleaned:
+        cleaned = ["unknown validation failure"]
+
+    blob = " ".join(cleaned).casefold()
+    fix_lines: list[str] = []
+
+    if "conflicting ascendant" in blob or (
+        "ascendant" in blob and "western" in blob and "vedic" in blob
+    ):
+        fix_lines.append(
+            "Ascendant clash: do not put conflicting Western vs Vedic Ascendant signs "
+            "in the same chapter unless notes explicitly name both Western and Vedic "
+            "as distinct maps and forbid reconciling them. Prefer splitting them across "
+            "chapters."
+        )
+    if "house number" in blob and "western" in blob and "vedic" in blob:
+        fix_lines.append(
+            "House-number mix: if the same house number appears in both Western and "
+            "Vedic records in one chapter, notes MUST contain the words Western and "
+            "Vedic and keep those house maps distinct (do not merge). Otherwise move "
+            "one system’s paths to another chapter."
+        )
+    if "theme must differ from title" in blob or "theme equal to title" in blob:
+        fix_lines.append(
+            "Theme vs title: each chapter theme must be conceptually distinct from its "
+            "title (not a copy or paraphrase of the title)."
+        )
+    if "source_paths" in blob or "unresolved source_paths" in blob:
+        fix_lines.append(
+            "source_paths: use exact dotted paths that exist in the Comprehensive "
+            "Astrological Data; every listed path must resolve."
+        )
+    if "invalid json" in blob:
+        fix_lines.append(
+            "JSON: return one complete valid JSON object matching the required schema."
+        )
+    if "incomplete" in blob:
+        fix_lines.append(
+            "Completeness: return the full book structure in one response; do not "
+            "truncate mid-JSON."
+        )
+    if not fix_lines:
+        fix_lines.append(
+            "Revise chapter_input_material_used (source_paths and/or notes) and any "
+            "other flagged fields so every validation error below is resolved."
+        )
+
+    error_block = "\n".join(f"- {e}" for e in cleaned)
+    fix_block = "\n".join(f"- {line}" for line in fix_lines)
+    return (
+        "VALIDATION FEEDBACK — previous attempt failed. "
+        "Return a complete corrected JSON book structure only (no commentary).\n\n"
+        "Errors to fix:\n"
+        f"{error_block}\n\n"
+        "How to fix:\n"
+        f"{fix_block}\n\n"
+        "Rules:\n"
+        "- Do not include the previous JSON; produce a fresh full structure.\n"
+        "- Keep freeform source_paths selection, but satisfy the errors above.\n"
+        "- Multi-system chapters are allowed only when notes explicitly name "
+        "Western and Vedic as distinct maps."
+    )
+
+
+def build_architect_model_input(
+    system_prompt: str,
+    user_prompt: str,
+    last_errors: list[str] | None = None,
+) -> list[dict]:
+    """Messages for Architect call; append retry guide when last_errors is set."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    if last_errors:
+        messages.append(
+            {
+                "role": "user",
+                "content": build_architect_validation_retry_guide(last_errors),
+            }
+        )
+    return messages
 
 
 def chapter_material_preview(material) -> str:

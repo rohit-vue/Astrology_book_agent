@@ -8,9 +8,11 @@ from __future__ import annotations
 import base64
 import io
 import os
+import traceback
 from datetime import datetime
 
 import boto3
+import openai
 import requests
 from openai import OpenAI
 from PIL import Image
@@ -24,8 +26,37 @@ COVER_PROMPT_SSM_NAME = os.environ.get(
     "COVER_PROMPT_SSM_NAME",
     "/AstrologyBookFactory/prompts/cover/image",
 )
+OPENAI_IMAGE_TIMEOUT_SECONDS = int(os.environ.get("OPENAI_IMAGE_TIMEOUT_SECONDS", "180"))
 
 _cover_prompt_template_cache: str | None = None
+
+
+def _openai_error_details(exc: Exception) -> str:
+    details = [
+        f"type={exc.__class__.__module__}.{exc.__class__.__name__}",
+        f"message={str(exc) or repr(exc)}",
+    ]
+    for attr in ("status_code", "request_id", "code", "type"):
+        value = getattr(exc, attr, None)
+        if value:
+            details.append(f"{attr}={value}")
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        if status_code:
+            details.append(f"response_status={status_code}")
+        try:
+            body = response.text
+        except Exception:
+            body = None
+        if body:
+            details.append(f"response_body={body[:1000]}")
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        details.append(
+            f"cause={cause.__class__.__module__}.{cause.__class__.__name__}: {cause!r}"
+        )
+    return " | ".join(details)
 
 
 def format_birth_datetime_label(birth_data: dict) -> str:
@@ -96,24 +127,33 @@ def build_simple_sky_city_prompt(birth_data: dict) -> str:
 def generate_cover_background_from_birth_data(birth_data: dict, api_key: str) -> Image.Image:
     prompt = build_simple_sky_city_prompt(birth_data)
     print(f"Cover art location: {format_geo_hint(birth_data)}")
+    print(
+        f"OpenAI image config: sdk={openai.__version__}, model={MODEL_COVER_IMAGE}, "
+        f"size={IMAGE_SIZE}, timeout={OPENAI_IMAGE_TIMEOUT_SECONDS}s"
+    )
     print(f"Cover art prompt: {prompt}")
 
-    client = OpenAI(api_key=api_key)
-    response = client.images.generate(
-        model=MODEL_COVER_IMAGE,
-        prompt=prompt,
-        n=1,
-        size=IMAGE_SIZE,
-        quality="medium",
-    )
-    item = response.data[0]
-    if getattr(item, "b64_json", None):
-        raw = base64.b64decode(item.b64_json)
-    elif getattr(item, "url", None):
-        download = requests.get(item.url, timeout=120)
-        download.raise_for_status()
-        raw = download.content
-    else:
-        raise RuntimeError("Image API response has neither b64_json nor url")
+    client = OpenAI(api_key=api_key, timeout=OPENAI_IMAGE_TIMEOUT_SECONDS, max_retries=2)
+    try:
+        response = client.images.generate(
+            model=MODEL_COVER_IMAGE,
+            prompt=prompt,
+            n=1,
+            size=IMAGE_SIZE,
+            quality="medium",
+        )
+        item = response.data[0]
+        if getattr(item, "b64_json", None):
+            raw = base64.b64decode(item.b64_json)
+        elif getattr(item, "url", None):
+            download = requests.get(item.url, timeout=120)
+            download.raise_for_status()
+            raw = download.content
+        else:
+            raise RuntimeError("Image API response has neither b64_json nor url")
+    except Exception as exc:
+        print(f"OpenAI cover image generation failed: {_openai_error_details(exc)}")
+        print(traceback.format_exc())
+        raise
 
     return Image.open(io.BytesIO(raw)).convert("RGB")

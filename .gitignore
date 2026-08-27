@@ -36,6 +36,9 @@ local_test/run_pdf_from_artifacts.py
 local_test/run_pdf_paragraph_smoke.py
 local_test/export_paragraph_smoke_md.py
 local_test/make_paragraph_smoke_pdf.py
+local_test/_review_shpfy_7225194676474
+local_test/test_architect_retry_guide.py
+local_test/test_freeform_system_separation.py
 
 # Terraform State & Cache
 .terraform/

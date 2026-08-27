@@ -209,6 +209,9 @@ Each chapter object MUST contain exactly these four fields:
   - Python will copy those source records verbatim into the final chapter_input_material_used for the writer.
   - You MAY also add optional keys (e.g. "notes") for narrative guidance in __LANGUAGE__.
   - Do NOT invent chart facts. Do NOT paraphrase chart records as a substitute for source_paths.
+  - Western houses, Vedic planet houses, and Bhavabala houses are different maps — select paths from the correct branch; never merge house systems in notes.
+  - HARD VALIDATION: If one chapter includes both a Western Ascendant/1st-house cusp and a Vedic Ascendant with different signs, notes MUST name Western and Vedic as distinct maps and forbid reconciling them (or put them in different chapters).
+  - HARD VALIDATION: If one chapter uses the same house number from both Western and Vedic records, notes MUST keep those house maps distinct (e.g. name Western and Vedic, or say do not merge / remain distinct). Unguided mixes are rejected.
   IMPORTANT: After hydration, chapter_input_material_used is the ONLY chart material the chapter writer will receive.
 
 **STRUCTURE RULES:**

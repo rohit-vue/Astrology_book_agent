@@ -43,8 +43,8 @@ resource "null_resource" "build_generate_cover_package" {
     app_py_hash       = filemd5("${path.module}/../src/generate_cover/app.py")
     cover_art_py_hash = filemd5("${path.module}/../src/generate_cover/cover_art.py")
     reqs_txt_hash     = filemd5("${path.module}/../src/generate_cover/requirements.txt")
-    font_files_hash  = md5(join("", [for f in fileset("${path.module}/../src/generate_cover/fonts", "*") : filemd5("${path.module}/../src/generate_cover/fonts/${f}")]))
-    build_recipe_rev = "lulu-paperback-cover-dimensions-v2"
+    font_files_hash   = md5(join("", [for f in fileset("${path.module}/../src/generate_cover/fonts", "*") : filemd5("${path.module}/../src/generate_cover/fonts/${f}")]))
+    build_recipe_rev  = "lulu-paperback-cover-dimensions-v2"
   }
 
   provisioner "local-exec" {
@@ -101,16 +101,17 @@ resource "aws_lambda_function" "generate_cover" {
 
   environment {
     variables = {
-      API_KEYS_SECRET_ARN   = aws_secretsmanager_secret.api_keys_v2.arn
-      ARTIFACTS_BUCKET      = aws_s3_bucket.artifacts_bucket.id
-      LULU_API_BASE         = "https://api.lulu.com"
-      LULU_POD_PACKAGE_ID   = "0550X0850.BW.STD.LW.060UC444.MNG"
+      API_KEYS_SECRET_ARN           = aws_secretsmanager_secret.api_keys_v2.arn
+      ARTIFACTS_BUCKET              = aws_s3_bucket.artifacts_bucket.id
+      LULU_API_BASE                 = "https://api.lulu.com"
+      LULU_POD_PACKAGE_ID           = "0550X0850.BW.STD.LW.060UC444.MNG"
       LULU_POD_PACKAGE_ID_HARDCOVER = "0550X0850.BW.STD.LW.060UC444.MNG"
       LULU_POD_PACKAGE_ID_PAPERBACK = "0550X0850.BW.STD.PB.060UC444.MXX"
-      COVER_DYNAMIC_ENABLED   = "1"
-      MODEL_COVER_IMAGE       = "gpt-image-2"
-      COVER_IMAGE_SIZE        = "2560x1440"
-      COVER_PROMPT_SSM_NAME   = aws_ssm_parameter.cover_image_prompt.name
+      COVER_DYNAMIC_ENABLED         = "1"
+      MODEL_COVER_IMAGE             = "gpt-image-2"
+      COVER_IMAGE_SIZE              = "2560x1440"
+      OPENAI_IMAGE_TIMEOUT_SECONDS  = "180"
+      COVER_PROMPT_SSM_NAME         = aws_ssm_parameter.cover_image_prompt.name
     }
   }
 }

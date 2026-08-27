@@ -91,6 +91,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = aws_lambda_function.fetch_astrology.arn, "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
               Next       = "ArchitectBook"
             },
             ArchitectBook = {
@@ -98,6 +99,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = aws_lambda_function.architect_book.arn, "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_architect,
               Next       = "WriteChapters"
             },
             WriteChapters = {
@@ -105,6 +107,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = "${aws_lambda_function.write_chapters.arn}:prod", "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
               Next       = "GenerateEbook"
             },
             GenerateEbook = {
@@ -112,6 +115,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = aws_lambda_function.generate_ebook.arn, "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
               Next       = "GeneratePDF"
             },
             GeneratePDF = {
@@ -120,6 +124,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
               Parameters     = { "FunctionName" = aws_lambda_function.generate_pdf.arn, "Payload.$" = "$" },
               ResultPath     = "$",
               TimeoutSeconds = 900,
+              Retry          = local.sfn_retry_transient,
               Next           = "GenerateCoverImageWithPageCount"
             },
             GenerateCoverImageWithPageCount = {
@@ -127,6 +132,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = aws_lambda_function.generate_cover.arn, "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
               Next       = "CombineResultsForSequential"
             },
             CombineResultsForSequential = {
@@ -160,6 +166,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" = aws_lambda_function.assemble_payload.arn, "Payload.$" = "$" },
         ResultPath = "$",
+        Retry      = local.sfn_retry_transient,
         Next       = "NotifyLulu"
       },
       NotifyLulu = {
@@ -167,6 +174,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" : aws_lambda_function.notify_lulu.arn, "Payload.$" : "$.Payload" },
         ResultPath = "$.lulu_result",
+        Retry      = local.sfn_retry_transient,
         Catch      = [{ "ErrorEquals" : ["States.All"], "Next" : "OrderFailed" }],
         Next       = "SendEmail"
       },
@@ -175,6 +183,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" : aws_lambda_function.send_email.arn, "Payload.$" : "$.Payload" },
         ResultPath = "$.email_result",
+        Retry      = local.sfn_retry_transient,
         Next       = "OrderSucceeded"
       },
       OrderSucceeded = { "Type" : "Succeed" },
@@ -196,9 +205,42 @@ locals {
     "cover_title.$"            = "$.Payload.cover_title"
     "birth_data.$"             = "$.Payload.birth_data"
     "shipping_code.$"          = "$.Payload.shipping_code"
-    "book_format.$"           = "$.Payload.book_format"
+    "book_format.$"            = "$.Payload.book_format"
     "requires_shipping.$"      = "$.Payload.requires_shipping"
   }
+
+  # Transient Lambda / platform failures (not permanent validation errors).
+  sfn_retry_transient = [
+    {
+      ErrorEquals = [
+        "Lambda.ServiceException",
+        "Lambda.AWSLambdaException",
+        "Lambda.SdkClientException",
+        "Lambda.TooManyRequestsException",
+        "States.Timeout",
+        "RetryableOpenAIError",
+      ]
+      IntervalSeconds = 15
+      MaxAttempts     = 3
+      BackoffRate     = 2.0
+    }
+  ]
+  # Architect: longer OpenAI / long-running Lambda.
+  sfn_retry_architect = [
+    {
+      ErrorEquals = [
+        "Lambda.ServiceException",
+        "Lambda.AWSLambdaException",
+        "Lambda.SdkClientException",
+        "Lambda.TooManyRequestsException",
+        "States.Timeout",
+        "RetryableOpenAIError",
+      ]
+      IntervalSeconds = 30
+      MaxAttempts     = 3
+      BackoffRate     = 2.0
+    }
+  ]
 }
 
 # v2: WriteChapters split into parallel OpenAI Batch tracks + finalize (no long Lambda polling).
@@ -240,6 +282,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = aws_lambda_function.fetch_astrology.arn, "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
               Next       = "ArchitectBook"
             },
             ArchitectBook = {
@@ -247,6 +290,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = aws_lambda_function.architect_book.arn, "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_architect,
               Next       = "WriteChaptersParallel"
             },
             WriteChaptersParallel = {
@@ -265,6 +309,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                         }, local.wc_common_payload_refs)
                       }),
                       ResultPath = "$",
+                      Retry      = local.sfn_retry_transient,
                       Next       = "WaitTextPoll"
                     },
                     WaitTextPoll = {
@@ -282,6 +327,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                         }, local.wc_common_payload_refs)
                       }),
                       ResultPath = "$",
+                      Retry      = local.sfn_retry_transient,
                       Next       = "TextBatchChoice"
                     },
                     TextBatchChoice = {
@@ -319,6 +365,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                         }, local.wc_common_payload_refs)
                       }),
                       ResultPath = "$",
+                      Retry      = local.sfn_retry_transient,
                       Next       = "CollectTextRoute"
                     },
                     CollectTextRoute = {
@@ -361,6 +408,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                         }, local.wc_common_payload_refs)
                       }),
                       ResultPath = "$",
+                      Retry      = local.sfn_retry_transient,
                       Next       = "WaitImagePoll"
                     },
                     WaitImagePoll = {
@@ -378,6 +426,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                         }, local.wc_common_payload_refs)
                       }),
                       ResultPath = "$",
+                      Retry      = local.sfn_retry_transient,
                       Next       = "ImageBatchChoice"
                     },
                     ImageBatchChoice = {
@@ -415,6 +464,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                         }, local.wc_common_payload_refs)
                       }),
                       ResultPath = "$",
+                      Retry      = local.sfn_retry_transient,
                       Next       = "CollectImageRoute"
                     },
                     CollectImageRoute = {
@@ -471,6 +521,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
                 }
               },
               ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
               Next       = "GenerateEbook"
             },
             GenerateEbook = {
@@ -478,6 +529,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = aws_lambda_function.generate_ebook.arn, "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
               Next       = "GeneratePDF"
             },
             GeneratePDF = {
@@ -486,6 +538,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
               Parameters     = { "FunctionName" = aws_lambda_function.generate_pdf.arn, "Payload.$" = "$" },
               ResultPath     = "$",
               TimeoutSeconds = 900,
+              Retry          = local.sfn_retry_transient,
               Next           = "GenerateCoverImageWithPageCount"
             },
             GenerateCoverImageWithPageCount = {
@@ -493,6 +546,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
               Resource   = "arn:aws:states:::lambda:invoke",
               Parameters = { "FunctionName" = "${aws_lambda_function.generate_cover.arn}:prod", "Payload.$" = "$" },
               ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
               Next       = "CombineResultsForSequential"
             },
             CombineResultsForSequential = {
@@ -526,6 +580,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" = aws_lambda_function.assemble_payload.arn, "Payload.$" = "$" },
         ResultPath = "$",
+        Retry      = local.sfn_retry_transient,
         Next       = "NotifyLulu"
       },
       NotifyLulu = {
@@ -533,6 +588,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" = aws_lambda_function.notify_lulu.arn, "Payload.$" = "$.Payload" },
         ResultPath = "$.lulu_result",
+        Retry      = local.sfn_retry_transient,
         Catch      = [{ ErrorEquals = ["States.All"], Next = "OrderFailed" }],
         Next       = "SendEmail"
       },
@@ -541,6 +597,7 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
         Resource   = "arn:aws:states:::lambda:invoke",
         Parameters = { "FunctionName" = aws_lambda_function.send_email.arn, "Payload.$" = "$.Payload" },
         ResultPath = "$.email_result",
+        Retry      = local.sfn_retry_transient,
         Next       = "OrderSucceeded"
       },
       OrderSucceeded = { Type = "Succeed" },

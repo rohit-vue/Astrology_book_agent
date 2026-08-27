@@ -6,7 +6,14 @@ import time
 import base64
 import re
 from botocore.config import Config
-from openai import AsyncOpenAI, OpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    OpenAI,
+    RateLimitError,
+)
 from urllib.parse import urlparse
 
 from chart_material import (
@@ -159,6 +166,56 @@ SECTION_PROMPT_SSM_NAMES = {
     "epilogue": "/AstrologyBookFactory/prompts/writer/epilogue",
 }
 SECTION_DESC_KEYS = ("preface_description", "prologue_description", "epilogue_description")
+
+
+class RetryableOpenAIError(RuntimeError):
+    """Raised for OpenAI failures that Step Functions should retry."""
+
+
+def _is_retryable_openai_error(exc: Exception) -> bool:
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        status = getattr(exc, "status_code", None)
+        return status in {408, 409, 429} or (isinstance(status, int) and status >= 500)
+    return False
+
+
+def _openai_error_summary(exc: Exception) -> str:
+    status = getattr(exc, "status_code", None)
+    request_id = getattr(exc, "request_id", None)
+    parts = [exc.__class__.__name__]
+    if status is not None:
+        parts.append(f"status={status}")
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    return " ".join(parts)
+
+
+def _call_openai(operation: str, func, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except Exception as exc:
+        if _is_retryable_openai_error(exc):
+            summary = _openai_error_summary(exc)
+            print(f"Retryable OpenAI error during {operation}: {summary}")
+            raise RetryableOpenAIError(
+                f"Retryable OpenAI error during {operation}: {summary}"
+            ) from exc
+        raise
+
+
+async def _call_openai_async(operation: str, func, *args, **kwargs):
+    try:
+        return await func(*args, **kwargs)
+    except Exception as exc:
+        if _is_retryable_openai_error(exc):
+            summary = _openai_error_summary(exc)
+            print(f"Retryable OpenAI error during {operation}: {summary}")
+            raise RetryableOpenAIError(
+                f"Retryable OpenAI error during {operation}: {summary}"
+            ) from exc
+        raise
 
 
 def get_chapter_prompt_template() -> str:
@@ -603,7 +660,9 @@ async def generate_writing_style(chart: dict, focus: str, language: str) -> str:
     prompt = render_style_analysis_prompt(template, focus, language, chart)
     schema = writing_style_schema()
     print("Generating writing style profile (Responses API, json_schema, emphasize/suppress)...")
-    style_resp = await async_openai_client.responses.create(
+    style_resp = await _call_openai_async(
+        "style responses.create",
+        async_openai_client.responses.create,
         model=MODEL_CONTENT,
         input=[{"role": "user", "content": prompt}],
         text=responses_text_format(
@@ -697,7 +756,9 @@ def _sections_from_batch_results(merged: dict, section_manifest: dict, sections_
 
 async def _generate_section_once(name, description, style, language):
     prompt = _section_batch_prompt(name, description, style, language)
-    resp = await async_openai_client.responses.create(
+    resp = await _call_openai_async(
+        f"{name} section responses.create",
+        async_openai_client.responses.create,
         model=MODEL_CONTENT,
         input=[{"role": "user", "content": prompt}],
         text={"format": {"type": "text"}, "verbosity": TEXT_VERBOSITY_SECTION},
@@ -722,6 +783,8 @@ async def generate_section(name, description, style, language):
                 print(f"✅ {name} SUCCESS (attempt {attempt}/{max_attempts}): {word_count} words, {len(text)} chars")
                 return text
             print(f"WARNING: {name} attempt {attempt}/{max_attempts} returned empty text; retrying...")
+        except RetryableOpenAIError:
+            raise
         except Exception as e:
             print(f"❌ Error generating {name} (attempt {attempt}/{max_attempts}): {e}")
     print(f"ERROR: {name} failed after {max_attempts} attempts")
@@ -851,9 +914,16 @@ def submit_batch(client, tasks, endpoint, artifact_prefix):
         f.write(jsonl_bytes)
 
     with open(tmp_path, "rb") as f:
-        file_obj = client.files.create(file=f, purpose="batch")
+        file_obj = _call_openai(
+            f"{artifact_prefix} files.create",
+            client.files.create,
+            file=f,
+            purpose="batch",
+        )
 
-    batch_job = client.batches.create(
+    batch_job = _call_openai(
+        f"{artifact_prefix} batches.create",
+        client.batches.create,
         input_file_id=file_obj.id,
         endpoint=endpoint,
         completion_window="24h",
@@ -959,7 +1029,11 @@ def poll_batch_until_done(client, batch_id):
     start = time.time()
     n = 0
     while True:
-        batch = client.batches.retrieve(batch_id)
+        batch = _call_openai(
+            "poll batch retrieve",
+            client.batches.retrieve,
+            batch_id,
+        )
         n += 1
         counts = batch.request_counts
         print(
@@ -975,7 +1049,11 @@ def collect_chapter_batch_results(client, batch):
     if not batch.output_file_id:
         print(f"Batch {batch.id} has no output file (status={batch.status}); retrying missing text ids.")
         return {}, set()
-    result_content = client.files.content(batch.output_file_id).content
+    result_content = _call_openai(
+        "text batch output file content",
+        client.files.content,
+        batch.output_file_id,
+    ).content
     results_by_id = {}
     failed_ids = set()
 
@@ -1077,7 +1155,9 @@ async def build_image_batch_tasks(chapters_data, image_prompt_template):
 
         summary = text[:700]
         try:
-            sum_resp = await async_openai_client.responses.create(
+            sum_resp = await _call_openai_async(
+                "image summary responses.create",
+                async_openai_client.responses.create,
                 model=MODEL_CONTENT,
                 input=[{"role": "user", "content": f"Summarize text for image: {text[:1200]}"}],
                 text={"format": {"type": "text"}, "verbosity": "low"},
@@ -1110,7 +1190,11 @@ def collect_image_batch_results(client, batch):
     if not batch.output_file_id:
         print(f"Image batch {batch.id} has no output file (status={batch.status}); retrying missing images.")
         return {}, set()
-    result_content = client.files.content(batch.output_file_id).content
+    result_content = _call_openai(
+        "image batch output file content",
+        client.files.content,
+        batch.output_file_id,
+    ).content
     image_bytes_by_id = {}
     failed_ids = set()
 
@@ -1146,7 +1230,11 @@ def collect_and_store_image_results(client, batch, manifest, order_id, line_item
     if not batch.output_file_id:
         print(f"Image batch {batch.id} has no output file (status={batch.status}); retrying missing images.")
         return s3_keys_by_id, set(manifest.keys()) - set(s3_keys_by_id.keys())
-    result_content = client.files.content(batch.output_file_id).content
+    result_content = _call_openai(
+        "image batch output file content",
+        client.files.content,
+        batch.output_file_id,
+    ).content
     failed_ids = set()
 
     for line in result_content.decode("utf-8").strip().split("\n"):
@@ -1373,7 +1461,11 @@ def op_check_text_batch(payload: dict) -> dict:
     if not batch_id:
         raise ValueError("No text batch id in state.")
 
-    batch = sync_openai_client.batches.retrieve(batch_id)
+    batch = _call_openai(
+        "check text batch retrieve",
+        sync_openai_client.batches.retrieve,
+        batch_id,
+    )
     counts = _request_counts_dict(batch)
     age = _batch_age_seconds(batch)
     terminal = batch.status in {"completed", "failed", "expired", "cancelled"}
@@ -1431,7 +1523,11 @@ async def op_collect_text_results(payload: dict) -> dict:
     sections_meta = load_state(prefix, "wc_sections_meta.json") or {}
     batch_id = pipe.get("current_batch_id")
 
-    batch = sync_openai_client.batches.retrieve(batch_id)
+    batch = _call_openai(
+        "collect text batch retrieve",
+        sync_openai_client.batches.retrieve,
+        batch_id,
+    )
     if batch.status not in {"completed", "expired", "failed", "cancelled"}:
         raise RuntimeError(f"Chapter text batch ended with status={batch.status}")
 
@@ -1571,7 +1667,11 @@ def op_check_image_batch(payload: dict) -> dict:
     if not batch_id:
         raise ValueError("No image batch id in state.")
 
-    batch = sync_openai_client.batches.retrieve(batch_id)
+    batch = _call_openai(
+        "check image batch retrieve",
+        sync_openai_client.batches.retrieve,
+        batch_id,
+    )
     counts = _request_counts_dict(batch)
     age = _batch_age_seconds(batch)
     terminal = batch.status in {"completed", "failed", "expired", "cancelled"}
@@ -1626,7 +1726,11 @@ async def op_collect_image_results(payload: dict) -> dict:
     manifest = load_state(prefix, "image_manifest.json") or {}
     batch_id = pipe.get("current_batch_id")
 
-    batch = sync_openai_client.batches.retrieve(batch_id)
+    batch = _call_openai(
+        "collect image batch retrieve",
+        sync_openai_client.batches.retrieve,
+        batch_id,
+    )
     if batch.status not in {"completed", "expired", "failed", "cancelled"}:
         raise RuntimeError(
             f"Image batch ended with unexpected status={batch.status}; "

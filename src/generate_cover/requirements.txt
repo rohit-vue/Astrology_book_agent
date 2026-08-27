@@ -1,5 +1,5 @@
 # FILE: src/generate_cover/requirements.txt
 Pillow
 requests==2.31.0
-openai
+openai==2.45.0
 boto3

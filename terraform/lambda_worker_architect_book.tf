@@ -63,7 +63,7 @@ resource "aws_lambda_function" "architect_book" {
       API_KEYS_SECRET_ARN         = aws_secretsmanager_secret.api_keys_v2.arn
       ARTIFACTS_BUCKET            = aws_s3_bucket.artifacts_bucket.id
       MODEL_ARCHITECT             = "gpt-5.6-sol"
-      REASONING_EFFORT_ARCHITECT  = "high"
+      REASONING_EFFORT_ARCHITECT  = "max"
       TEXT_VERBOSITY_ARCHITECT    = "high"
       ARCHITECT_MAX_OUTPUT_TOKENS = "100000"
       ARCHITECT_MIN_CHAPTERS      = "1"
