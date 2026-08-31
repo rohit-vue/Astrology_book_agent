@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Local end-to-end book generation pipeline (BATCH API variant).
 Uses the OpenAI Batch API for chapter text via /v1/responses (GPT-5.6 Sol).
@@ -70,23 +70,8 @@ def _env_flag(key: str) -> bool:
 
 
 def _architect_forced_retry_errors() -> list[str]:
-    """Local smoke-test hook: force one guided Architect retry with realistic errors."""
-    if not _env_flag("ARCHITECT_FORCE_RETRY_GUIDE_ONCE"):
-        return []
-
-    custom = os.environ.get("ARCHITECT_FORCE_RETRY_GUIDE_ERROR", "").strip()
-    if custom:
-        return [line.strip() for line in custom.splitlines() if line.strip()]
-
-    return [
-        "chapter 1 mixes conflicting Ascendant signs without system-separation "
-        "notes (western Aquarius vs vedic Capricorn). Keep them in different "
-        "chapters, or add notes that name Western and Vedic as distinct maps "
-        "and forbid reconciling them.",
-        "chapter 5 mixes western and vedic house number(s) [10] without "
-        "system-separation notes. Split systems across chapters, or add notes "
-        "that keep Western and Vedic house maps distinct (do not merge).",
-    ]
+    """Disabled: local architect retry guide is no longer forced."""
+    return []
 
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
@@ -112,7 +97,7 @@ ARCHITECT_MIN_CHAPTERS = 1
 ARCHITECT_MAX_CHAPTERS = 14
 ARCHITECT_MAX_RETRIES = 2
 
-# Style profile (structured JSON — keep reasoning moderate, text less verbose)
+# Style profile (structured JSON â€” keep reasoning moderate, text less verbose)
 REASONING_EFFORT_STYLE = "medium"
 TEXT_VERBOSITY_STYLE = "low"
 # Nested emphasize/suppress per domain needs more headroom than flat strings.
@@ -139,7 +124,7 @@ IMAGE_SUMMARY_MAX_OUTPUT_TOKENS = 200
 IMAGE_MIN_BYTES = 50000
 
 BATCH_POLL_INTERVAL = 30  # seconds between status checks
-# Fixed per-chapter length; total book length scales with chapter count (5–14).
+# Fixed per-chapter length; total book length scales with chapter count (5â€“14).
 CHAPTER_WORD_TARGET = 4000
 CHAPTER_WORD_MIN = 1000
 CHAPTER_WORD_MAX = 5000
@@ -186,7 +171,7 @@ Each chapter object MUST contain exactly these four fields:
   - "bhavabala_cues": array of compact strings from BHAVABALA / house strengths. Prefix EVERY cue with "bhavabala" and the Sanskrit name (Sukha, Putra, Dhana, etc.). Never treat these as western houses.
   - "vdasha_cues": copy planet + period dates only from VDASHA. Do not add psychological meanings.
   - "transit_cues": dense strings from NATAL_TRANSITS for today (transit planet, aspect, natal point, signs/houses, retro when available)
-  "notes" MUST be a string (use "" if nothing extra): free-form guidance for the writer—narrative angle, emotional emphasis, connections between cues, what to foreground or avoid. Do NOT repeat chart facts already in chapter_focus; add craft/direction the cues alone cannot carry.
+  "notes" MUST be a string (use "" if nothing extra): free-form guidance for the writerâ€”narrative angle, emotional emphasis, connections between cues, what to foreground or avoid. Do NOT repeat chart facts already in chapter_focus; add craft/direction the cues alone cannot carry.
   HOUSE SYSTEM RULE (CRITICAL):
   Western houses, Vedic PLANETS houses, and Bhavabala houses are different maps. Never merge them (e.g. do not imply western house 4 and bhavabala house 4 Sukha are the same sign).
   BOOK COVERAGE + UNIQUENESS (CRITICAL):
@@ -266,16 +251,14 @@ Each chapter object MUST contain exactly these four fields:
 - "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
 - "description": a detailed writing brief that expands on the theme for the chapter writer.
 - "chapter_input_material_used": an open JSON object (additionalProperties allowed).
-  CRITICAL — SELECT SOURCE PATHS, DO NOT PASTE FULL CHART TEXT:
+  CRITICAL â€” SELECT SOURCE PATHS, DO NOT PASTE FULL CHART TEXT:
   - Put exact identifiers into "source_paths": an array of dotted paths into the Comprehensive Astrological Data below.
   - Examples: "CHARTS.WESTERN_HOROSCOPE.Data.planets.0", "CHARTS.PLANETS.Data.3", "CHARTS.VDASHA.Data.major", "CHARTS.BHAVABALA.Data.houses.1", "CHARTS.NATAL_TRANSITS.Data.transit_relation.2".
   - Python will copy those source records verbatim into the final chapter_input_material_used for the writer.
   - You MAY also add optional keys (e.g. "notes") for narrative guidance in __LANGUAGE__.
   - Do NOT invent chart facts. Do NOT paraphrase chart records as a substitute for source_paths.
   - Prefer several precise paths per chapter over one huge branch.
-  - Western houses, Vedic planet houses, and Bhavabala houses are different maps — select paths from the correct branch; never merge house systems in notes.
-  - HARD VALIDATION: If one chapter includes both a Western Ascendant/1st-house cusp and a Vedic Ascendant with different signs, notes MUST name Western and Vedic as distinct maps and forbid reconciling them (or put them in different chapters).
-  - HARD VALIDATION: If one chapter uses the same house number from both Western and Vedic records, notes MUST keep those house maps distinct (e.g. name Western and Vedic, or say do not merge / remain distinct). Unguided mixes are rejected.
+  - Western houses, Vedic planet houses, and Bhavabala houses are different maps â€” select paths from the correct branch; never merge house systems in notes.
   IMPORTANT: After hydration, chapter_input_material_used is the ONLY chart material the chapter writer will receive.
 "title" and "theme" MUST be meaningfully different. Never copy the title into theme, and never paraphrase the title as the theme.
 
@@ -407,8 +390,8 @@ _CJK_CHAR_RE = re.compile(
     r"\u0e00-\u0e7f"
     r"]"
 )
-_CLOSING_WRAPPERS = '"\'""''」』)》）】'
-_SENTENCE_END_CHARS = frozenset(".!?。！？।॥")
+_CLOSING_WRAPPERS = '"\'""''ã€ã€)ã€‹ï¼‰ã€‘'
+_SENTENCE_END_CHARS = frozenset(".!?ã€‚ï¼ï¼Ÿà¥¤à¥¥")
 CJK_MIN_LENGTH_RATIO = 0.62
 
 
@@ -467,7 +450,7 @@ _CHAPTER_NUM_HEADER_RE = re.compile(
 
 
 def _strip_echoed_chapter_header(text: str, chapter_title: str | None = None) -> str:
-    """Remove a leading 'Chapter N: …' (or bare title) echo from model output."""
+    """Remove a leading 'Chapter N: â€¦' (or bare title) echo from model output."""
     cleaned = str(text or "")
     if not cleaned.strip():
         return cleaned
@@ -641,9 +624,6 @@ def _is_soft_architect_validation_errors(errors: list[str]) -> bool:
         "source_records",
         "source_paths_unresolved",
         "unresolved source_paths",
-        "mixes conflicting ascendant",
-        "mixes western and vedic house",
-        "system-separation notes",
     )
     return all(
         any(marker in str(error).casefold() for marker in soft_markers)
@@ -703,7 +683,7 @@ def section_descriptions_from_structure(structure: dict) -> tuple[str, str, str]
     """
     Read preface/prologue/epilogue descriptions from Architect output.
 
-    No hardcoded fallbacks — missing descriptions fail hard.
+    No hardcoded fallbacks â€” missing descriptions fail hard.
     """
     if not isinstance(structure, dict):
         raise ValueError("structure missing or not an object (no section-description fallbacks)")
@@ -1018,11 +998,6 @@ def architect_book(astrology_data, focus, language):
     for attempt in range(1, max_attempts + 1):
         print(f"  Calling OpenAI Responses API (attempt {attempt}/{max_attempts})...")
         print(f"  chapter_input_material_used mode: {material_mode}")
-        if last_errors:
-            print(
-                f"  Attaching validation retry guide "
-                f"({len(last_errors)} error(s) from prior attempt; no previous JSON)."
-            )
         schema = book_structure_schema(
             ARCHITECT_MIN_CHAPTERS,
             ARCHITECT_MAX_CHAPTERS,
@@ -1030,11 +1005,7 @@ def architect_book(astrology_data, focus, language):
         )
         resp = client.responses.create(
             model=MODEL_CONTENT,
-            input=build_architect_model_input(
-                system_prompt,
-                user_prompt,
-                last_errors=last_errors or None,
-            ),
+            input=build_architect_model_input(system_prompt, user_prompt),
             text=responses_text_format(
                 "book_structure",
                 schema,
@@ -1063,7 +1034,7 @@ def architect_book(astrology_data, focus, language):
             print(f"  VALIDATION FAIL attempt {attempt}: {last_errors[0]}")
             continue
 
-        # Freeform: hydrate source_paths → source_records before validation.
+        # Freeform: hydrate source_paths â†’ source_records before validation.
         structure = enrich_structure_with_chart_snapshots(structure, astrology_data)
         ok, errors = validate_book_structure(structure, astrology_data)
         if ok:
@@ -1197,19 +1168,19 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"**Paragraphing (critical for layout):** Write like a printed book chapter, not chat.\n"
             f"- **Vary paragraph length deliberately.** Keep a clear mix of short, medium, and very long paragraphs. "
             f"Do **not** settle into a steady rhythm where every paragraph is the same size.\n"
-            f"- **Short paragraphs (2–4 printed lines):** for emphasis, a turn in thought, or a breath — use sparingly.\n"
-            f"- **Medium paragraphs (5–8 printed lines):** the majority of the chapter.\n"
-            f"- **Longer medium (9–13 printed lines):** use some of these between the very long blocks so the page is not only mid + giant.\n"
+            f"- **Short paragraphs (2â€“4 printed lines):** for emphasis, a turn in thought, or a breath â€” use sparingly.\n"
+            f"- **Medium paragraphs (5â€“8 printed lines):** the majority of the chapter.\n"
+            f"- **Longer medium (9â€“13 printed lines):** use some of these between the very long blocks so the page is not only mid + giant.\n"
             f"- Use **single newlines** only when you must break a long paragraph; prefer joining sentences in the same paragraph with spaces.\n"
             f"- Use a blank line between paragraphs.\n"
-            f"Hard rule — no orphan one-liners (normal prose only):\n"
+            f"Hard rule â€” no orphan one-liners (normal prose only):\n"
             f"- Never place a single short line / one-sentence fragment as its own paragraph between longer narrative "
             f"paragraphs (e.g. one punchy sentence alone between two multi-sentence blocks).\n"
             f"- If a sentence is for emphasis inside normal prose, keep it inside the preceding or following paragraph "
-            f"(same block, spaces — not a blank-line break).\n"
-            f"- A standalone narrative paragraph must be at least 2–3 full sentences (several printed lines), "
+            f"(same block, spaces â€” not a blank-line break).\n"
+            f"- A standalone narrative paragraph must be at least 2â€“3 full sentences (several printed lines), "
             f"unless it is part of an intentional special block below.\n"
-            f"Special multi-line blocks (use when the content needs them — do not suppress):\n"
+            f"Special multi-line blocks (use when the content needs them â€” do not suppress):\n"
             f"- When the chapter needs contrast, use short single-line / multi-line layout for: "
             f"dialogue or conversation, a short quoted exchange, practical steps, numbered or bulleted lists, "
             f"exercise prompts, or similar script-like sequences.\n"
@@ -1220,24 +1191,24 @@ def build_chapter_batch_tasks(chapters_list, astrology_data, focus, style, langu
             f"- Do not flatten a needed conversation, list, or step sequence into one continuous paragraph "
             f"just to satisfy the orphan rule.\n"
             f"Very long paragraphs (mandatory count, soft length):\n"
-            f"- Every chapter MUST contain **2 or 3** very long paragraphs — no fewer than **2**, and **never more than 3**.\n"
-            f"- Prefer about **10–14 sentences** and roughly **14–18 printed lines** "
+            f"- Every chapter MUST contain **2 or 3** very long paragraphs â€” no fewer than **2**, and **never more than 3**.\n"
+            f"- Prefer about **10â€“14 sentences** and roughly **14â€“18 printed lines** "
             f"(one continuous block; spaces between sentences, not blank lines inside it).\n"
-            f"- Prefer the middle of that band (~15–17 lines) when the idea can land there.\n"
+            f"- Prefer the middle of that band (~15â€“17 lines) when the idea can land there.\n"
             f"- Thought preservation (critical): stay with one idea until it turns. "
             f"Do **not** split mid-thought just to hit a line count. "
             f"If a paragraph runs longer because it is still one continuous argument or story beat, that is allowed.\n"
-            f"- If the block passes ~20 lines because a **second** idea has started, start a new paragraph at that turn — "
+            f"- If the block passes ~20 lines because a **second** idea has started, start a new paragraph at that turn â€” "
             f"not mid-sentence. Avoid 25+ line walls unless the idea genuinely cannot turn earlier.\n"
-            f"- Place the 2–3 very long blocks in different parts of the chapter (early / middle / late), "
+            f"- Place the 2â€“3 very long blocks in different parts of the chapter (early / middle / late), "
             f"not all in one stretch.\n"
             f"- Count cap (critical): if you have written a **4th** very long paragraph, "
             f"split the extra into medium paragraphs. Four or more very long paragraphs is too many.\n"
             f"- Count before you finish: confirm you have **exactly 2 or 3** very long paragraphs, "
             f"then fill the rest with a mix of short + medium + longer-medium. "
-            f"Do not stop at one showcase long paragraph; do not flood the chapter with 4–6 giants.\n"
+            f"Do not stop at one showcase long paragraph; do not flood the chapter with 4â€“6 giants.\n"
             f"- Do not break a long thought into two medium paragraphs just to create white space; "
-            f"keep related sentences together until the idea turns — unless you are past the 3-count cap.\n"
+            f"keep related sentences together until the idea turns â€” unless you are past the 3-count cap.\n"
             f"**Output Rule:** Return only final chapter prose. "
             f"Do not begin with \"Chapter {chapter_num}:\" or the chapter title. "
             f"Start directly with body prose; first characters must be narrative text, never a heading."
@@ -1751,7 +1722,7 @@ async def write_chapters(astrology_data, structure, focus, language):
         style = style_json_for_writer(normalized)
         print(f"  SKIP_STYLE: reusing {style_json_path} ({len(style)} JSON chars for writer)")
     elif _env_flag("SKIP_STYLE") and os.path.isfile(style_path):
-        # Legacy: flattened text only — still injectable, but prefer JSON next run.
+        # Legacy: flattened text only â€” still injectable, but prefer JSON next run.
         with open(style_path, "r", encoding="utf-8") as f:
             style = f.read().strip()
         if not style:

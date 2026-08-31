@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Local end-to-end book generation pipeline.
 Replicates the full production Lambda pipeline locally:
@@ -62,7 +62,7 @@ _CHAPTER_NUM_HEADER_RE = re.compile(
 
 
 def _strip_echoed_chapter_header(text: str, chapter_title: str | None = None) -> str:
-    """Remove a leading 'Chapter N: …' (or bare title) echo from model output."""
+    """Remove a leading 'Chapter N: â€¦' (or bare title) echo from model output."""
     cleaned = str(text or "")
     if not cleaned.strip():
         return cleaned
@@ -129,7 +129,7 @@ Each chapter object MUST contain exactly these four fields:
   - "bhavabala_cues": array of compact strings from BHAVABALA / house strengths. Prefix EVERY cue with "bhavabala" and the Sanskrit name (Sukha, Putra, Dhana, etc.). Never treat these as western houses.
   - "vdasha_cues": copy planet + period dates only from VDASHA. Do not add psychological meanings.
   - "transit_cues": dense strings from NATAL_TRANSITS for today (transit planet, aspect, natal point, signs/houses, retro when available)
-  "notes" MUST be a string (use "" if nothing extra): free-form guidance for the writer—narrative angle, emotional emphasis, connections between cues, what to foreground or avoid. Do NOT repeat chart facts already in chapter_focus; add craft/direction the cues alone cannot carry.
+  "notes" MUST be a string (use "" if nothing extra): free-form guidance for the writerâ€”narrative angle, emotional emphasis, connections between cues, what to foreground or avoid. Do NOT repeat chart facts already in chapter_focus; add craft/direction the cues alone cannot carry.
   HOUSE SYSTEM RULE (CRITICAL):
   Western houses, Vedic PLANETS houses, and Bhavabala houses are different maps. Never merge them (e.g. do not imply western house 4 and bhavabala house 4 Sukha are the same sign).
   BOOK COVERAGE + UNIQUENESS (CRITICAL):
@@ -203,15 +203,13 @@ Each chapter object MUST contain exactly these four fields:
 - "theme": a short conceptual topic / lens for the chapter (what the chapter is about).
 - "description": a detailed writing brief that expands on the theme for the chapter writer.
 - "chapter_input_material_used": an open JSON object (additionalProperties allowed).
-  CRITICAL — SELECT SOURCE PATHS, DO NOT PASTE FULL CHART TEXT:
+  CRITICAL â€” SELECT SOURCE PATHS, DO NOT PASTE FULL CHART TEXT:
   - Put exact identifiers into "source_paths": an array of dotted paths into the Comprehensive Astrological Data below.
   - Examples: "CHARTS.WESTERN_HOROSCOPE.Data.planets.0", "CHARTS.PLANETS.Data.3", "CHARTS.VDASHA.Data.major".
   - Python will copy those source records verbatim into the final chapter_input_material_used for the writer.
   - You MAY also add optional keys (e.g. "notes") for narrative guidance in __LANGUAGE__.
   - Do NOT invent chart facts. Do NOT paraphrase chart records as a substitute for source_paths.
-  - Western houses, Vedic planet houses, and Bhavabala houses are different maps — select paths from the correct branch; never merge house systems in notes.
-  - HARD VALIDATION: If one chapter includes both a Western Ascendant/1st-house cusp and a Vedic Ascendant with different signs, notes MUST name Western and Vedic as distinct maps and forbid reconciling them (or put them in different chapters).
-  - HARD VALIDATION: If one chapter uses the same house number from both Western and Vedic records, notes MUST keep those house maps distinct (e.g. name Western and Vedic, or say do not merge / remain distinct). Unguided mixes are rejected.
+  - Western houses, Vedic planet houses, and Bhavabala houses are different maps â€” select paths from the correct branch; never merge house systems in notes.
   IMPORTANT: After hydration, chapter_input_material_used is the ONLY chart material the chapter writer will receive.
 
 **STRUCTURE RULES:**
@@ -424,7 +422,7 @@ def architect_book(astrology_data, focus, language):
     )
 
     structure = json.loads(resp.choices[0].message.content)
-    # Freeform: hydrate source_paths → source_records before validation.
+    # Freeform: hydrate source_paths â†’ source_records before validation.
     structure = enrich_structure_with_chart_snapshots(structure, astrology_data)
     chapters = structure.get("structure", {}).get("chapters", [])
     for i, ch in enumerate(chapters, start=1):

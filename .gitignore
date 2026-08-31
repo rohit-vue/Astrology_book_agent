@@ -39,6 +39,7 @@ local_test/make_paragraph_smoke_pdf.py
 local_test/_review_shpfy_7225194676474
 local_test/test_architect_retry_guide.py
 local_test/test_freeform_system_separation.py
+local_test/test_openai_batch_smoke.py
 
 # Terraform State & Cache
 .terraform/
