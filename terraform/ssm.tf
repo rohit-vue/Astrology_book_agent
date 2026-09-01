@@ -128,10 +128,12 @@ Hard rule — no orphan one-liners (normal prose only):
 - Never place a single short line / one-sentence fragment as its own paragraph between longer narrative paragraphs (e.g. one punchy sentence alone between two multi-sentence blocks).
 - If a sentence is for emphasis inside normal prose, keep it inside the preceding or following paragraph (same block, spaces — not a blank-line break).
 - A standalone narrative paragraph must be at least 2–3 full sentences (several printed lines), unless it is part of an intentional special block below.
-Special multi-line blocks (use when the content needs them — do not suppress):
+Special multi-line blocks (mandatory when the content needs them — do not suppress):
 - When the chapter needs contrast, use short single-line / multi-line layout for: dialogue or conversation, a short quoted exchange, practical steps, numbered or bulleted lists, exercise prompts, or similar script-like sequences.
 - Use these only when the content truly calls for it (not as decoration every page). A few well-placed blocks add variety; do not turn the whole chapter into a list.
 - Inside those blocks, use **single newlines** between lines/items. Separate the block from surrounding prose with blank lines as needed.
+- A paragraph containing inline enumeration like "1. ... 2. ... 3. ..." should be rewritten as a vertical list, unless the numbers are dates, quantities, astrological placements, or other factual values inside normal prose.
+- Use bullet lists for non-sequential grouped ideas; use numbered lists for ordered checks, steps, questions, criteria, or exercises.
 - Do not flatten a needed conversation, list, or step sequence into one continuous paragraph just to satisfy the orphan rule.
 Very long paragraphs (mandatory count, soft length):
 - Every chapter MUST contain **2 or 3** very long paragraphs — no fewer than **2**, and **never more than 3**.
