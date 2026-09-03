@@ -193,6 +193,21 @@ resource "aws_sfn_state_machine" "astrology_book_factory" {
 }
 
 locals {
+  architect_common_payload_refs = {
+    "order_id.$"               = "$.Payload.order_id"
+    "line_item_id.$"           = "$.Payload.line_item_id"
+    "focus.$"                  = "$.Payload.focus"
+    "language.$"               = "$.Payload.language"
+    "astrology_json_s3_path.$" = "$.Payload.astrology_json_s3_path"
+    "shipping_address.$"       = "$.Payload.shipping_address"
+    "customer_details.$"       = "$.Payload.customer_details"
+    "cover_title.$"            = "$.Payload.cover_title"
+    "birth_data.$"             = "$.Payload.birth_data"
+    "shipping_code.$"          = "$.Payload.shipping_code"
+    "book_format.$"            = "$.Payload.book_format"
+    "requires_shipping.$"      = "$.Payload.requires_shipping"
+  }
+
   wc_common_payload_refs = {
     "order_id.$"               = "$.Payload.order_id"
     "line_item_id.$"           = "$.Payload.line_item_id"
@@ -289,12 +304,120 @@ resource "aws_sfn_state_machine" "astrology_book_factory_v2" {
               Next       = "ArchitectBook"
             },
             ArchitectBook = {
-              Type       = "Task",
-              Resource   = "arn:aws:states:::lambda:invoke",
-              Parameters = { "FunctionName" = aws_lambda_function.architect_book.arn, "Payload.$" = "$" },
+              Type     = "Task",
+              Resource = "arn:aws:states:::lambda:invoke",
+              Parameters = merge({
+                FunctionName = aws_lambda_function.architect_book.arn
+                Payload = merge({
+                  operation = "submit_architect_batch"
+                }, local.architect_common_payload_refs)
+              }),
               ResultPath = "$",
               Retry      = local.sfn_retry_architect,
-              Next       = "WriteChaptersParallel"
+              Next       = "WaitArchitectPoll"
+            },
+            WaitArchitectPoll = {
+              Type    = "Wait",
+              Seconds = 300,
+              Next    = "CheckArchitectBatch"
+            },
+            CheckArchitectBatch = {
+              Type     = "Task",
+              Resource = "arn:aws:states:::lambda:invoke",
+              Parameters = merge({
+                FunctionName = aws_lambda_function.architect_book.arn
+                Payload = merge(
+                  {
+                    operation = "check_architect_batch"
+                  },
+                  local.architect_common_payload_refs,
+                  {
+                    "architect_batch_id.$" = "$.Payload.architect_batch_id"
+                  }
+                )
+              }),
+              ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
+              Next       = "ArchitectBatchChoice"
+            },
+            ArchitectBatchChoice = {
+              Type = "Choice",
+              Choices = [
+                {
+                  Variable      = "$.Payload.architect_batch_terminal",
+                  BooleanEquals = false,
+                  Next          = "WaitArchitectPoll"
+                },
+                {
+                  And = [
+                    { Variable = "$.Payload.architect_batch_terminal", BooleanEquals = true },
+                    { Variable = "$.Payload.architect_batch_status", StringEquals = "completed" }
+                  ],
+                  Next = "CollectArchitectResult"
+                },
+                {
+                  And = [
+                    { Variable = "$.Payload.architect_batch_terminal", BooleanEquals = true },
+                    { Variable = "$.Payload.architect_batch_status", StringEquals = "expired" }
+                  ],
+                  Next = "CollectArchitectResult"
+                },
+                {
+                  And = [
+                    { Variable = "$.Payload.architect_batch_terminal", BooleanEquals = true },
+                    { Variable = "$.Payload.architect_batch_status", StringEquals = "failed" }
+                  ],
+                  Next = "CollectArchitectResult"
+                },
+                {
+                  And = [
+                    { Variable = "$.Payload.architect_batch_terminal", BooleanEquals = true },
+                    { Variable = "$.Payload.architect_batch_status", StringEquals = "cancelled" }
+                  ],
+                  Next = "CollectArchitectResult"
+                }
+              ],
+              Default = "ArchitectBookFailed"
+            },
+            CollectArchitectResult = {
+              Type     = "Task",
+              Resource = "arn:aws:states:::lambda:invoke",
+              Parameters = merge({
+                FunctionName = aws_lambda_function.architect_book.arn
+                Payload = merge(
+                  {
+                    operation = "collect_architect_result"
+                  },
+                  local.architect_common_payload_refs,
+                  {
+                    "architect_batch_id.$" = "$.Payload.architect_batch_id"
+                  }
+                )
+              }),
+              ResultPath = "$",
+              Retry      = local.sfn_retry_transient,
+              Next       = "CollectArchitectRoute"
+            },
+            CollectArchitectRoute = {
+              Type = "Choice",
+              Choices = [
+                {
+                  Variable      = "$.Payload.architect_collect_complete",
+                  BooleanEquals = true,
+                  Next          = "WriteChaptersParallel"
+                },
+                {
+                  Variable      = "$.Payload.architect_track_need_wait",
+                  BooleanEquals = true,
+                  Next          = "WaitArchitectPoll"
+                }
+              ],
+              Default = "ArchitectBookFailed"
+            },
+            ArchitectBookFailed = {
+              Type  = "Fail",
+              Error = "ArchitectBookFailed",
+              Cause = "Architect batch did not complete successfully or collect failed."
             },
             WriteChaptersParallel = {
               Type = "Parallel",

@@ -42,6 +42,7 @@ def _env_int(key: str, default: int) -> int:
 
 
 MODEL_ID = _env_str("MODEL_ARCHITECT", "gpt-5.6-sol")
+BATCH_ENDPOINT_RESPONSES = _env_str("BATCH_ENDPOINT_RESPONSES", "/v1/responses")
 REASONING_EFFORT_ARCHITECT = _env_str("REASONING_EFFORT_ARCHITECT", "high")
 TEXT_VERBOSITY_ARCHITECT = _env_str("TEXT_VERBOSITY_ARCHITECT", "high")
 ARCHITECT_MAX_OUTPUT_TOKENS = _env_int("ARCHITECT_MAX_OUTPUT_TOKENS", 24000)
@@ -122,6 +123,49 @@ def _call_openai(operation: str, func, *args, **kwargs):
 def parse_s3_path(s3_path):
     parsed = urlparse(s3_path, allow_fragments=False)
     return parsed.netloc, parsed.path.lstrip("/")
+
+
+def unwrap_payload(event):
+    payload = event
+    for _ in range(5):
+        if isinstance(payload, dict) and "Payload" in payload and isinstance(payload["Payload"], dict):
+            payload = payload["Payload"]
+        else:
+            break
+    return payload
+
+
+def s3_put_json(bucket: str, key: str, obj: dict) -> None:
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=json.dumps(obj, indent=2),
+        ContentType="application/json",
+    )
+
+
+def s3_get_json(s3_path: str) -> dict:
+    bucket, key = parse_s3_path(s3_path)
+    s3_object = s3_client.get_object(Bucket=bucket, Key=key)
+    return json.loads(s3_object["Body"].read().decode("utf-8"))
+
+
+def state_prefix(order_id: str, line_item_id: str) -> str:
+    return f"architect-state/{order_id}/{line_item_id}"
+
+
+def save_state(prefix: str, name: str, obj: dict) -> None:
+    s3_put_json(ARTIFACTS_BUCKET, f"{prefix}/{name}", obj)
+
+
+def load_state(prefix: str, name: str) -> dict | None:
+    key = f"{prefix}/{name}"
+    try:
+        body = s3_client.get_object(Bucket=ARTIFACTS_BUCKET, Key=key)["Body"].read().decode("utf-8")
+        return json.loads(body)
+    except Exception as exc:
+        print(f"load_state miss or error for {key}: {exc}")
+        return None
 
 
 def _extract_text_from_responses_body_dict(body: dict) -> str:
@@ -291,6 +335,69 @@ def _log_coverage_status(chapters: list, astrology_data: dict | None) -> None:
         print("Chart coverage checks disabled (freeform source_paths).")
 
 
+def architect_response_body(system_prompt: str, user_prompt: str) -> dict:
+    return {
+        "model": MODEL_ID,
+        "input": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "text": responses_text_format(
+            "book_structure",
+            book_structure_schema(ARCHITECT_MIN_CHAPTERS, ARCHITECT_MAX_CHAPTERS),
+            verbosity=TEXT_VERBOSITY_ARCHITECT,
+            strict=book_structure_schema_strict(),
+        ),
+        "reasoning": {"effort": REASONING_EFFORT_ARCHITECT},
+        "max_output_tokens": ARCHITECT_MAX_OUTPUT_TOKENS,
+    }
+
+
+def validate_architect_raw_text(
+    raw_text: str,
+    astrology_data: dict | None,
+) -> tuple[dict | None, list[str]]:
+    if not raw_text:
+        return None, ["empty model response"]
+    try:
+        full_structure = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        return None, [f"invalid JSON: {exc}"]
+
+    full_structure = enrich_structure_with_chart_snapshots(
+        full_structure, astrology_data
+    )
+    ok, errors = validate_book_structure(full_structure, astrology_data)
+    if not ok:
+        return None, errors
+    return full_structure, []
+
+
+def log_valid_structure(full_structure: dict, astrology_data: dict | None) -> None:
+    chapters = _chapters_from_structure(full_structure)
+    print(f"Generated valid structure with {len(chapters)} chapters.")
+    for i, ch in enumerate(chapters, start=1):
+        title = str(ch.get("title", "") or "")
+        material = ch.get("chapter_input_material_used") or {}
+        preview = chapter_material_preview(material)
+        print(
+            f"  Chapter {i}: {title} ({len(title)} chars) | "
+            f"theme: {ch.get('theme', '')} | "
+            f"{preview}"
+        )
+    _log_coverage_status(chapters, astrology_data)
+
+
+def save_book_structure(payload: dict, full_structure: dict) -> dict:
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    output_key = f"book-structures/{order_id}/{line_item_id}.json"
+    s3_put_json(ARTIFACTS_BUCKET, output_key, full_structure)
+    out = dict(payload)
+    out["book_structure_s3_path"] = f"s3://{ARTIFACTS_BUCKET}/{output_key}"
+    return out
+
+
 def architect_book_structure(
     system_prompt: str,
     user_prompt: str,
@@ -305,19 +412,7 @@ def architect_book_structure(
         response = _call_openai(
             "architect responses.create",
             openai_client.responses.create,
-            model=MODEL_ID,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            text=responses_text_format(
-                "book_structure",
-                book_structure_schema(ARCHITECT_MIN_CHAPTERS, ARCHITECT_MAX_CHAPTERS),
-                verbosity=TEXT_VERBOSITY_ARCHITECT,
-                strict=book_structure_schema_strict(),
-            ),
-            reasoning={"effort": REASONING_EFFORT_ARCHITECT},
-            max_output_tokens=ARCHITECT_MAX_OUTPUT_TOKENS,
+            **architect_response_body(system_prompt, user_prompt),
         )
 
         if _response_is_incomplete(response):
@@ -368,41 +463,309 @@ def architect_book_structure(
     )
 
 
+def configure_openai() -> None:
+    secret_payload = secrets_manager_client.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
+    api_key = json.loads(secret_payload["SecretString"]).get("OpenAIKey")
+    if not api_key:
+        raise ValueError("OpenAIKey missing from API key secret.")
+    openai_client.api_key = api_key
+
+
+def _echo_payload(payload: dict) -> dict:
+    out = dict(payload)
+    out.pop("operation", None)
+    return out
+
+
+def _qanda_text(payload: dict) -> str:
+    qanda = payload.get("qanda_content")
+    if isinstance(qanda, dict):
+        return str(qanda.get("qanda_content", "") or "")
+    return str(qanda or "")
+
+
+def _request_counts_dict(batch) -> dict:
+    counts = getattr(batch, "request_counts", None)
+    return {
+        "total": getattr(counts, "total", 0) if counts is not None else 0,
+        "completed": getattr(counts, "completed", 0) if counts is not None else 0,
+        "failed": getattr(counts, "failed", 0) if counts is not None else 0,
+    }
+
+
+def submit_architect_batch(task: dict, artifact_prefix: str) -> str:
+    tmp_path = f"/tmp/{artifact_prefix}_input.jsonl"
+    with open(tmp_path, "wb") as f:
+        f.write((json.dumps(task, ensure_ascii=False) + "\n").encode("utf-8"))
+
+    with open(tmp_path, "rb") as f:
+        file_obj = _call_openai(
+            f"{artifact_prefix} files.create",
+            openai_client.files.create,
+            file=f,
+            purpose="batch",
+        )
+
+    batch_job = _call_openai(
+        f"{artifact_prefix} batches.create",
+        openai_client.batches.create,
+        input_file_id=file_obj.id,
+        endpoint=BATCH_ENDPOINT_RESPONSES,
+        completion_window="24h",
+        metadata={"description": artifact_prefix},
+    )
+    print(
+        f"Architect batch created: {batch_job.id} "
+        f"input_file_id={getattr(batch_job, 'input_file_id', None)}"
+    )
+    return batch_job.id
+
+
+def _load_architect_context(payload: dict) -> tuple[dict, str, str]:
+    astrology_data = s3_get_json(payload["astrology_json_s3_path"])
+    system_prompt, user_prompt = get_prompts_from_ssm(
+        astrology_data,
+        payload.get("focus", "Personality"),
+        payload.get("language", "English"),
+        _qanda_text(payload),
+    )
+    return astrology_data, system_prompt, user_prompt
+
+
+def _build_architect_task(system_prompt: str, user_prompt: str) -> dict:
+    return {
+        "custom_id": "architect-structure",
+        "method": "POST",
+        "url": BATCH_ENDPOINT_RESPONSES,
+        "body": architect_response_body(system_prompt, user_prompt),
+    }
+
+
+def op_submit_architect_batch(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+
+    astrology_data, system_prompt, user_prompt = _load_architect_context(payload)
+    task = _build_architect_task(system_prompt, user_prompt)
+    batch_id = submit_architect_batch(task, "architect_structure")
+
+    save_state(prefix, "architect_base_payload.json", _echo_payload(payload))
+    save_state(prefix, "architect_task.json", {"task": task})
+    save_state(
+        prefix,
+        "architect_pipeline.json",
+        {
+            "current_batch_id": batch_id,
+            "retry_count": 0,
+            "last_errors": [],
+            "model": MODEL_ID,
+            "reasoning_effort": REASONING_EFFORT_ARCHITECT,
+            "astrology_json_s3_path": payload["astrology_json_s3_path"],
+        },
+    )
+    print(f"Submitted Architect batch for {order_id}/{line_item_id}")
+    return {
+        **_echo_payload(payload),
+        "architect_state_prefix": prefix,
+        "architect_batch_id": batch_id,
+    }
+
+
+def op_check_architect_batch(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+    pipe = load_state(prefix, "architect_pipeline.json") or {}
+    batch_id = pipe.get("current_batch_id") or payload.get("architect_batch_id")
+    if not batch_id:
+        raise ValueError("No Architect batch id in state.")
+
+    batch = _call_openai(
+        "check architect batch retrieve",
+        openai_client.batches.retrieve,
+        batch_id,
+    )
+    counts = _request_counts_dict(batch)
+    terminal = batch.status in {"completed", "failed", "expired", "cancelled"}
+    print(
+        f"check_architect_batch status={batch.status} terminal={terminal} "
+        f"total={counts['total']} done={counts['completed']} failed={counts['failed']}"
+    )
+    return {
+        **_echo_payload(payload),
+        "architect_state_prefix": prefix,
+        "architect_batch_id": batch_id,
+        "architect_batch_status": batch.status,
+        "architect_batch_terminal": terminal,
+        "architect_request_counts": counts,
+    }
+
+
+def _architect_errors_from_batch(batch) -> list[str]:
+    errors = getattr(batch, "errors", None)
+    data = getattr(errors, "data", None) if errors is not None else None
+    if not data:
+        return []
+    out = []
+    for item in data:
+        message = getattr(item, "message", None) or str(item)
+        out.append(message)
+    return out
+
+
+def _extract_architect_batch_text(client, batch) -> tuple[str | None, list[str]]:
+    if not getattr(batch, "output_file_id", None):
+        return None, _architect_errors_from_batch(batch) or [
+            f"batch ended with status={batch.status} and no output file"
+        ]
+
+    result_content = _call_openai(
+        "architect batch output file content",
+        client.files.content,
+        batch.output_file_id,
+    ).content
+    errors: list[str] = []
+    for line in result_content.decode("utf-8").strip().split("\n"):
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        if entry.get("custom_id") != "architect-structure":
+            continue
+        if entry.get("error"):
+            return None, [f"architect batch request error: {entry['error']}"]
+        response = entry.get("response") or {}
+        if response.get("status_code") != 200:
+            return None, [f"architect batch response status={response.get('status_code')}"]
+        body = response.get("body") or {}
+        if body.get("status") == "incomplete" or body.get("incomplete_details"):
+            return None, [f"response incomplete: {body.get('incomplete_details')}"]
+        raw_text = _extract_text_from_responses_body_dict(body)
+        if raw_text:
+            return raw_text, []
+        errors.append("empty model response")
+    return None, errors or ["architect-structure result not found in batch output"]
+
+
+def _resubmit_architect_batch(prefix: str, pipe: dict, errors: list[str]) -> dict | None:
+    retry_count = int(pipe.get("retry_count") or 0)
+    if retry_count >= ARCHITECT_MAX_RETRIES:
+        return None
+    task_obj = load_state(prefix, "architect_task.json") or {}
+    task = task_obj.get("task")
+    if not task:
+        return None
+    retry_count += 1
+    new_batch_id = submit_architect_batch(task, f"architect_structure_retry_{retry_count}")
+    save_state(
+        prefix,
+        "architect_pipeline.json",
+        {
+            **pipe,
+            "current_batch_id": new_batch_id,
+            "retry_count": retry_count,
+            "last_errors": errors,
+        },
+    )
+    return {"architect_batch_id": new_batch_id, "retry_count": retry_count}
+
+
+def op_collect_architect_result(payload: dict) -> dict:
+    configure_openai()
+    order_id = payload["order_id"]
+    line_item_id = payload["line_item_id"]
+    prefix = state_prefix(order_id, line_item_id)
+    pipe = load_state(prefix, "architect_pipeline.json") or {}
+    batch_id = pipe.get("current_batch_id") or payload.get("architect_batch_id")
+    if not batch_id:
+        raise ValueError("No Architect batch id in state.")
+
+    batch = _call_openai(
+        "collect architect batch retrieve",
+        openai_client.batches.retrieve,
+        batch_id,
+    )
+    if batch.status not in {"completed", "failed", "expired", "cancelled"}:
+        raise RuntimeError(f"Architect batch ended with status={batch.status}")
+
+    astrology_data = s3_get_json(payload["astrology_json_s3_path"])
+    raw_text, batch_errors = _extract_architect_batch_text(openai_client, batch)
+    if batch_errors:
+        print(f"Architect batch error(s): {batch_errors}")
+    full_structure, validation_errors = validate_architect_raw_text(raw_text or "", astrology_data)
+    errors = batch_errors + validation_errors
+    if full_structure is None:
+        replacement = _resubmit_architect_batch(prefix, pipe, errors)
+        if replacement:
+            return {
+                **_echo_payload(payload),
+                "architect_state_prefix": prefix,
+                "architect_batch_id": replacement["architect_batch_id"],
+                "architect_track_need_wait": True,
+                "architect_collect_complete": False,
+                "architect_retry_count": replacement["retry_count"],
+            }
+        raise ValueError(
+            "Book structure invalid after async Architect retries: "
+            + "; ".join(errors)
+        )
+
+    log_valid_structure(full_structure, astrology_data)
+    out = save_book_structure(_echo_payload(payload), full_structure)
+    out.update(
+        {
+            "architect_state_prefix": prefix,
+            "architect_batch_id": batch_id,
+            "architect_collect_complete": True,
+            "architect_track_need_wait": False,
+        }
+    )
+    save_state(
+        prefix,
+        "architect_pipeline.json",
+        {
+            **pipe,
+            "current_batch_id": batch_id,
+            "last_errors": [],
+            "book_structure_s3_path": out["book_structure_s3_path"],
+        },
+    )
+    return out
+
+
 def lambda_handler(event, context):
     print(f"ArchitectBook received event: {json.dumps(event)}")
-    payload = event.get("Payload", event)
+    payload = unwrap_payload(event)
+    operation = payload.get("operation") if isinstance(payload, dict) else None
+
+    if operation == "submit_architect_batch":
+        return op_submit_architect_batch(payload)
+    if operation == "check_architect_batch":
+        return op_check_architect_batch(payload)
+    if operation == "collect_architect_result":
+        return op_collect_architect_result(payload)
 
     order_id = payload.get("order_id")
     line_item_id = payload.get("line_item_id")
     astrology_s3_path = payload.get("astrology_json_s3_path")
     focus = payload.get("focus", "Personality")
     language = payload.get("language", "English")
-    qanda_content = payload.get("qanda_content", {}).get("qanda_content", "")
+    qanda_content = _qanda_text(payload)
 
     if not all([order_id, line_item_id, astrology_s3_path]):
         raise ValueError("Missing required fields.")
 
     try:
-        secret_payload = secrets_manager_client.get_secret_value(SecretId=API_KEYS_SECRET_ARN)
-        openai_client.api_key = json.loads(secret_payload["SecretString"]).get("OpenAIKey")
+        configure_openai()
 
-        bucket, key = parse_s3_path(astrology_s3_path)
-        s3_object = s3_client.get_object(Bucket=bucket, Key=key)
-        astrology_data = json.loads(s3_object["Body"].read().decode("utf-8"))
+        astrology_data = s3_get_json(astrology_s3_path)
 
         system_prompt, user_prompt = get_prompts_from_ssm(astrology_data, focus, language, qanda_content)
         full_structure = architect_book_structure(system_prompt, user_prompt, astrology_data)
 
-        output_key = f"book-structures/{order_id}/{line_item_id}.json"
-        s3_client.put_object(
-            Bucket=ARTIFACTS_BUCKET,
-            Key=output_key,
-            Body=json.dumps(full_structure, indent=2),
-            ContentType="application/json",
-        )
-
-        payload["book_structure_s3_path"] = f"s3://{ARTIFACTS_BUCKET}/{output_key}"
-        return payload
+        return save_book_structure(payload, full_structure)
 
     except Exception as e:
         print(f"ERROR: {e}")

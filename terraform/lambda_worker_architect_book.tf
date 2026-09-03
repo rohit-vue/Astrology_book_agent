@@ -69,7 +69,7 @@ resource "aws_lambda_function" "architect_book" {
       ARCHITECT_MIN_CHAPTERS      = "1"
       ARCHITECT_MAX_CHAPTERS      = "14"
       ARCHITECT_MAX_RETRIES       = "2"
-      OPENAI_TIMEOUT_SECONDS      = "720"
+      OPENAI_TIMEOUT_SECONDS      = "180"
       OPENAI_MAX_RETRIES          = "1"
       AWS_CONNECT_TIMEOUT_SECONDS = "3"
       AWS_READ_TIMEOUT_SECONDS    = "30"
