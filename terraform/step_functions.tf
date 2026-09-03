@@ -234,6 +234,9 @@ locals {
         "Lambda.SdkClientException",
         "Lambda.TooManyRequestsException",
         "States.Timeout",
+        "States.TaskFailed",
+        "Sandbox.Timeout",
+        "Lambda.Unknown",
         "RetryableOpenAIError",
       ]
       IntervalSeconds = 30
