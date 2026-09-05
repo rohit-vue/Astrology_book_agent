@@ -33,6 +33,7 @@ services:
       - ./book_pdf_exporter_local.py:/app/generate_pdf/book_pdf_exporter.py:ro
       - ./run_local_batch_pipeline.py:/app/run_local_batch_pipeline.py:ro
       - ./test_openai_batch_smoke.py:/app/test_openai_batch_smoke.py:ro
+      - ./test_chapters_paragraphs.py:/app/test_chapters_paragraphs.py:ro
       - ./structured_schemas.py:/app/structured_schemas.py:ro
       - ./chart_material.py:/app/chart_material.py:ro
       - ./chart_coverage.py:/app/chart_coverage.py:ro

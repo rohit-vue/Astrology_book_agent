@@ -59,6 +59,9 @@ _CHAPTER_NUM_HEADER_RE = re.compile(
     r"^\s*Chapter\s+\d+\s*:\s*[^\n]+(?:\n+|$)",
     re.IGNORECASE,
 )
+_INLINE_ORDERED_MARKER_RE = re.compile(r"(?<![\w.])(\d{1,2})\.\s+")
+_INLINE_BULLET_MARKER_RE = re.compile(r"\s*•\s+")
+_LIST_ITEM_SEPARATOR = "\n\n"
 
 
 def _strip_echoed_chapter_header(text: str, chapter_title: str | None = None) -> str:
@@ -79,6 +82,75 @@ def _strip_echoed_chapter_header(text: str, chapter_title: str | None = None) ->
             cleaned = (parts[1] if len(parts) > 1 else "").lstrip("\n\r ")
 
     return cleaned
+
+
+def _ordered_markers_are_list(matches: list[re.Match]) -> bool:
+    if len(matches) < 2:
+        return False
+    numbers = [int(m.group(1)) for m in matches]
+    if numbers[0] != 1:
+        return False
+    return all(curr == prev + 1 for prev, curr in zip(numbers, numbers[1:]))
+
+
+def _split_inline_ordered_list(block: str) -> str:
+    matches = list(_INLINE_ORDERED_MARKER_RE.finditer(block))
+    if not _ordered_markers_are_list(matches):
+        return block
+
+    parts = []
+    lead = block[:matches[0].start()].strip()
+    if lead:
+        parts.append(lead)
+
+    for idx, marker in enumerate(matches):
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(block)
+        item_text = block[marker.end():end].strip()
+        if item_text:
+            parts.append(f"{marker.group(1)}. {item_text}")
+
+    if lead:
+        return parts[0] + "\n\n" + _LIST_ITEM_SEPARATOR.join(parts[1:])
+    return _LIST_ITEM_SEPARATOR.join(parts)
+
+
+def _split_inline_bullet_list(block: str) -> str:
+    matches = list(_INLINE_BULLET_MARKER_RE.finditer(block))
+    if len(matches) < 2:
+        return block
+
+    lead = block[:matches[0].start()].strip()
+    bullets = []
+    for idx, marker in enumerate(matches):
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(block)
+        item_text = block[marker.end():end].strip()
+        if item_text:
+            bullets.append(f"• {item_text}")
+
+    if not bullets:
+        return block
+    if lead:
+        return lead + "\n\n" + _LIST_ITEM_SEPARATOR.join(bullets)
+    return _LIST_ITEM_SEPARATOR.join(bullets)
+
+
+def cleanup_inline_lists(text: str) -> str:
+    """Convert inline ordered/bullet list runs into vertical lists."""
+    raw = str(text or "")
+    if not raw.strip():
+        return raw
+
+    blocks = re.split(r"(\n\s*\n)", raw)
+    cleaned_blocks = []
+    for block in blocks:
+        if not block or re.fullmatch(r"\n\s*\n", block):
+            cleaned_blocks.append(block)
+            continue
+        cleaned = _split_inline_bullet_list(block)
+        cleaned = _split_inline_ordered_list(cleaned)
+        cleaned_blocks.append(cleaned)
+    return "".join(cleaned_blocks)
+
 
 OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 ASTRO_WESTERN_UID = os.environ["ASTROLOGY_WESTERN_USER_ID"]
@@ -543,6 +615,10 @@ async def write_single_chapter(client, idx, details, chart, target, focus, style
         (text_resp.choices[0].message.content or "").strip(),
         title,
     )
+    cleaned_text = cleanup_inline_lists(text)
+    if cleaned_text != text:
+        print(f"  Chapter {idx}: reflowed inline list markers into vertical list blocks")
+        text = cleaned_text
 
     img_path = None
     try:
